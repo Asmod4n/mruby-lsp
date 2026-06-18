@@ -42,13 +42,23 @@ gem_root = File.expand_path(File.join(__dir__, "..", ".."))
 require_relative File.join(gem_root, "lib", "mruby_lsp", "version")
 version = MrubyLsp::VERSION
 
+# Where RubyGems is ACTUALLY putting binstubs for this install. Under rbenv
+# (and any setup where `gem env` reports EXECUTABLE DIRECTORY != gem_dir/bin)
+# the relative `__dir__/../../../../bin` walk lands in the gem install dir,
+# but RubyGems writes the `-server` / `-setup-impl` / `-update-impl` binstubs
+# to Gem.bindir. The launcher uses /proc/self/exe to find its impl sibling
+# (PATH is bypassed by design), so both MUST share a bindir. Use Gem.bindir.
+target_bindir = Gem.bindir
+# derived_bin kept as a back-compat candidate for the VS Code extension's
+# install.json lookup -- on a stock (non-rbenv) install Gem.bindir == gem_dir/bin
+# so this collapses to one entry.
 derived_bin = File.expand_path(File.join(__dir__, "..", "..", "..", "..", "bin"))
-candidates = [derived_bin, File.join(Gem.user_dir, "bin"), Gem.bindir].uniq
+candidates = [target_bindir, derived_bin, File.join(Gem.user_dir, "bin")].uniq
 
 File.write(
   File.join(data_dir, "install.json"),
   JSON.pretty_generate(
-    "bin"            => derived_bin,
+    "bin"            => target_bindir,
     "bin_candidates" => candidates,
     "version"        => version,
     "ruby"           => RbConfig.ruby,
@@ -64,7 +74,6 @@ launcher_src = File.expand_path(File.join(gem_root, "ext", "mruby_lsp_launcher",
 # runs. Linux-only and degrade-safe: if it's not on disk, setup runs the build
 # unwrapped (the fetch/build FS split still stands).
 nonet_src = File.expand_path(File.join(gem_root, "ext", "mruby_lsp_launcher", "nonet.c"))
-target_bindir = derived_bin
 FileUtils.mkdir_p(target_bindir)
 ext = RbConfig::CONFIG["EXEEXT"] # "" on Unix, ".exe" on Windows
 

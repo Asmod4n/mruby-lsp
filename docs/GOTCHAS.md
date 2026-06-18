@@ -876,3 +876,22 @@ parse (one parse, not two). Lesson: a stand-in document is only safe if it
 answers EVERY accessor every reachable inference branch touches — the overlay
 tests used a real ParseResult as `.ast`, so they never exercised the gap; a
 commented real-world file did.
+
+## Install: `Gem.bindir` ≠ `gem_dir/bin` under rbenv (and any custom prefix)
+
+The install hook (`ext/mruby_lsp_install/extconf.rb`) used to compute its
+target bindir relative to its own location:
+`File.expand_path("../../../../bin", __dir__)` → `gem_dir/bin`. On a stock
+RubyGems install that equals `Gem.bindir`, and everything lands in one place.
+Under rbenv (and any `gem env` with `EXECUTABLE DIRECTORY` ≠ `gem_dir/bin`)
+they diverge: RubyGems wrote the `-server` / `-setup-impl` / `-update-impl`
+binstubs to `Gem.bindir` (`<prefix>/bin`), the hook wrote the launcher and
+its three aliases to `gem_dir/bin`. They MUST live together — the launcher
+resolves its impl via `/proc/self/exe` and refuses to fall back to PATH (the
+unspoofable-impl-path contract is part of the confinement design). Result:
+every command died at startup with
+`could not locate '<name>' next to this launcher`. Fix: use `Gem.bindir`
+directly; keep `derived_bin` only as a back-compat candidate in
+`install.json` so the VS Code extension's lookup still finds older installs.
+Lesson: never reconstruct a RubyGems install path by walking `__dir__` —
+ask `Gem` for it. The two only happen to match on the default layout.
