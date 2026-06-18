@@ -2,7 +2,7 @@
   "name": "mruby-lsp",
   "displayName": "mruby Language Server",
   "description": "Language server for mruby projects — completion, hover, and go-to-definition driven by the live mruby VM.",
-  "version": "0.1.116",
+  "version": "0.1.118",
   "publisher": "Asmod4n",
   "engines": {
     "vscode": "^1.75.0"
