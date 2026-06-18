@@ -57,12 +57,13 @@ what mruby "usually" has.
 - Install: the compiled launchers (`mruby-lsp` / `mruby-lsp-setup` /
   `mruby-lsp-update` / `mruby-lsp-nonet`) now go to `Gem.bindir` — the
   configured EXECUTABLE DIRECTORY (honors `--bindir`, user vs system install,
-  rbenv) — alongside RubyGems' own `-server` / `-setup-impl` / `-update-impl`
-  binstubs. They are therefore on PATH (so `mruby-lsp-setup` resolves as a
-  command), and the launcher's `/proc/self/exe` impl-sibling contract holds in
-  that same dir. A prior version derived the bindir with path math and overshot
-  to `Gem.dir/bin` — a directory nobody knows: not on PATH, and untracked by
-  RubyGems, so its binaries were orphaned on `gem uninstall`.
+  rbenv) — so they are on PATH (`mruby-lsp-setup` resolves as a command). There
+  are no RubyGems binstubs sitting beside them (`spec.executables` is empty): the
+  launcher bakes in the Ruby interpreter + the gem's `lib/` dir and execve's the
+  CLI dispatcher (`lib/mruby_lsp/cli.rb`) directly, handing it the command's role,
+  so nothing needs PATH resolution. A prior version derived the bindir with path
+  math and overshot to `Gem.dir/bin` — a directory nobody knows: not on PATH, and
+  untracked by RubyGems, so its binaries were orphaned on `gem uninstall`.
 - Install/uninstall are now symmetric: a `lib/rubygems_plugin.rb` post-uninstall
   hook removes everything `gem uninstall` can't — the non-declared launcher /
   nonet files, plus the out-of-tree records (`install.json`, per-workspace setup

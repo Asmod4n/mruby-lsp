@@ -3,10 +3,13 @@
  *
  * ONE binary, installed under each user-facing name (`mruby-lsp`,
  * `mruby-lsp-setup`, `mruby-lsp-update`). It picks its role from its OWN
- * basename (/proc/self/exe) — see ROLES[] below — and execve()s the matching
- * impl sibling. Confinement is MANDATORY: the launcher always attempts every
- * step its role calls for, then execs the impl. The FS wall is role-gated
- * (server: on; build/fetch: deferred — see ROLES[] and SANDBOX-CROSSPLATFORM.md).
+ * basename (/proc/self/exe) — see ROLES[] below — and execve()s Ruby on this
+ * gem's CLI dispatcher (lib/mruby_lsp/cli.rb), passing the role as a fixed
+ * argument: `ruby -I<lib> -r mruby_lsp/cli -e 'MrubyLsp::CLI.run(ARGV.shift,
+ * ARGV)' -- <role> …`. There is no per-command binstub. Confinement is
+ * MANDATORY: the launcher always attempts every step its role calls for, then
+ * execs Ruby. The FS wall is role-gated (server: on; build/fetch: deferred —
+ * see ROLES[] and SANDBOX-CROSSPLATFORM.md).
  *
  * SECURITY INVARIANT — the environment steers NOTHING here.
  *   This binary is the confinement boundary, and env is precisely what an
@@ -33,8 +36,8 @@
  *                    set must be tuned against a real server+reflect.so run;
  *                    a too-tight filter is a cryptic SIGSYS at startup. See
  *                    docs/design/SANDBOX-CROSSPLATFORM.md.
- *   6. execve      — into this role's impl script, resolved as the sibling of
- *                    this launcher's real on-disk path (/proc/self/exe).
+ *   6. execve      — Ruby on this gem's CLI dispatcher (baked lib dir), handing
+ *                    it this role's name. No binstub, no PATH search.
  *
  * Build with -DMRUBY_LSP_SANDBOX_VERBOSE for stderr debug logging. That is a
  * COMPILE-TIME switch, not an env var, and it never disables any step.
@@ -178,11 +181,11 @@ static int apply_seccomp_marker(void)
 /* ── role dispatch ────────────────────────────────────────────────────────── */
 /* One launcher binary, installed under each user-facing name. WHICH executable
  * we are is decided by our OWN real basename (from /proc/self/exe — kernel
- * truth, not the spoofable argv[0], not env). The name selects the gem entry
- * script we exec (via Ruby) and whether the Landlock FS wall applies. */
+ * truth, not the spoofable argv[0], not env). The name selects the role string
+ * we hand the CLI dispatcher and whether the Landlock FS wall applies. */
 struct role {
     const char *name;    /* our installed basename */
-    const char *target;  /* gem entry script we execve via Ruby (baked SCRIPTDIR) */
+    const char *target;  /* role string passed to MrubyLsp::CLI.run (server/…) */
     int         fs_wall; /* 1: install the Landlock FS allow-list. 0: process
                           * hardening only — the build/fetch FS footprint is not
                           * yet walled (mruby_root can live outside the
@@ -191,9 +194,9 @@ struct role {
                           * See docs/design/SANDBOX-CROSSPLATFORM.md. */
 };
 static const struct role ROLES[] = {
-    { "mruby-lsp",        "mruby-lsp-server",      1 },
-    { "mruby-lsp-setup",  "mruby-lsp-setup-impl",  0 },
-    { "mruby-lsp-update", "mruby-lsp-update-impl", 0 },
+    { "mruby-lsp",        "server", 1 },
+    { "mruby-lsp-setup",  "setup",  0 },
+    { "mruby-lsp-update", "update", 0 },
 };
 
 static const struct role *current_role(void)
@@ -209,33 +212,21 @@ static const struct role *current_role(void)
     return NULL;
 }
 
-/* ── target resolution: Ruby + the gem entry script, baked in at install ───── */
-/* The Ruby interpreter and the gem's bin/ directory are compiled into THIS binary
+/* ── target resolution: Ruby + the gem's lib dir, baked in at install ───────── */
+/* The Ruby interpreter and the gem's lib/ directory are compiled into THIS binary
  * by the install hook (ext/mruby_lsp_install/extconf.rb), recorded from the exact
  * gem being installed. Both are absolute and — like /proc/self/exe — cannot be
- * redirected by env or argv. We execve Ruby DIRECTLY on the gem entry script: no
- * separate impl binstub, no PATH search. The script lives in the gem dir, which
- * sits under self_gemhome (dirname^2 of our own path) and so under the Landlock RX
- * rule. Missing/empty defines (a dev build that forgot to bake them) -> fail loud. */
+ * redirected by env or argv. We execve Ruby on the CLI dispatcher
+ * (`<lib>/mruby_lsp/cli.rb`, reached via `-I<lib> -r mruby_lsp/cli`): no binstub,
+ * no PATH search. lib/ sits under self_gemhome (dirname^2 of our own
+ * path) and so under the Landlock RX rule. Missing/empty defines (a dev build that
+ * forgot to bake them) -> fail loud in main(). */
 #ifndef MRUBY_LSP_RUBY
 # define MRUBY_LSP_RUBY ""
 #endif
-#ifndef MRUBY_LSP_SCRIPTDIR
-# define MRUBY_LSP_SCRIPTDIR ""
+#ifndef MRUBY_LSP_LIB
+# define MRUBY_LSP_LIB ""
 #endif
-
-/* "<scriptdir>/<script>" (heap), or NULL if unbaked / unreadable / too long. */
-static char *script_path(const char *script)
-{
-    if (MRUBY_LSP_SCRIPTDIR[0] == '\0') return NULL;
-    size_t need = strlen(MRUBY_LSP_SCRIPTDIR) + 1 + strlen(script) + 1;
-    char *p = malloc(need);
-    if (!p) return NULL;
-    snprintf(p, need, "%s/%s", MRUBY_LSP_SCRIPTDIR, script);
-    if (access(p, R_OK) == 0) return p;
-    free(p);
-    return NULL;
-}
 
 #if MRUBY_LSP_HAVE_LANDLOCK
 /* ── 4. Landlock ──────────────────────────────────────────────────────────── */
@@ -396,12 +387,13 @@ static int apply_landlock(const char *workspace)
         add_path_rule(ruleset_fd, workspace, r);
     }
 
-    /* The launcher's own gem-install root (RX). Without this, execv() of the
-     * sibling `mruby-lsp-server` binstub fails with EACCES under Landlock —
-     * the launcher itself was loaded before the wall went up, but anything
-     * exec'd afterward needs an explicit allow. This single rule covers
-     * <gemhome>/{bin,gems,specifications,extensions}, which is everything the
-     * binstub + Ruby's require chain reach. Works for any gem install layout
+    /* The launcher's own gem-install root (RX). The Ruby we execve lives elsewhere
+     * (/usr or a version-manager dir, allowed above), but the CLI dispatcher and
+     * the whole require chain it pulls (the mruby_lsp library, prism, …) live
+     * UNDER this root; without an explicit allow they fail with EACCES once up
+     * (the launcher itself was loaded before it). This single rule covers
+     * <gemhome>/{bin,gems,specifications,extensions}, which is everything the baked
+     * lib/ + Ruby's require chain reach. Works for any gem install layout
      * (system, user --user-install, --install-dir <bundled>). */
     char gemhome[4096];
     if (self_gemhome(gemhome, sizeof gemhome) == 0) {
@@ -475,27 +467,41 @@ int main(int argc, char **argv)
         vlog("role %s: process hardening only (NNP + env-scrub)", role->name);
     }
 
-    /* Exec Ruby DIRECTLY on the gem entry script (baked at install — no separate
-     * impl binstub, no PATH). Landlock/seccomp/NNP are inherited across execve. */
+    /* Exec Ruby on this gem's CLI dispatcher (baked Ruby + lib dir — no binstub,
+     * no PATH). The role string comes from our ROLES table, not env/argv.
+     * Landlock/seccomp/NNP are inherited across execve. */
     const char *ruby = MRUBY_LSP_RUBY;
-    char *script = script_path(role->target);
-    if (ruby[0] == '\0' || !script) {
+    const char *lib  = MRUBY_LSP_LIB;
+    if (ruby[0] == '\0' || lib[0] == '\0') {
         fprintf(stderr,
-                "mruby-lsp: gem entry not found (ruby=%s, script=%s). The install "
+                "mruby-lsp: gem entry not baked (ruby=%s, lib=%s). The install "
                 "hook bakes these in; reinstall the gem.\n",
-                ruby[0] ? ruby : "(unbaked)", script ? script : "(unbaked)");
+                ruby[0] ? ruby : "(unbaked)", lib[0] ? lib : "(unbaked)");
         return 127;
     }
 
-    /* new argv: ruby <script> <our args...> */
-    char **new_argv = calloc((size_t)argc + 2, sizeof(char *));
+    /* new argv:
+     *   ruby -I <lib> -r mruby_lsp/cli -e <bootstrap> -- <role> <our args...>
+     * The 9-slot fixed prefix + (argc-1) forwarded args + NULL. */
+    static const char *const BOOTSTRAP = "MrubyLsp::CLI.run(ARGV.shift, ARGV)";
+    const int PREFIX = 9;
+    char **new_argv = calloc((size_t)PREFIX + (size_t)argc, sizeof(char *));
     if (!new_argv) { perror("calloc"); return 1; }
-    new_argv[0] = (char *)ruby;
-    new_argv[1] = script;
-    for (int i = 1; i < argc; i++) new_argv[i + 1] = argv[i];
-    new_argv[argc + 1] = NULL;
+    int n = 0;
+    new_argv[n++] = (char *)ruby;
+    new_argv[n++] = (char *)"-I";
+    new_argv[n++] = (char *)lib;
+    new_argv[n++] = (char *)"-r";
+    new_argv[n++] = (char *)"mruby_lsp/cli";
+    new_argv[n++] = (char *)"-e";
+    new_argv[n++] = (char *)BOOTSTRAP;
+    new_argv[n++] = (char *)"--";
+    new_argv[n++] = (char *)role->target;          /* the role string */
+    for (int i = 1; i < argc; i++) new_argv[n++] = argv[i];
+    new_argv[n] = NULL;
 
-    vlog("execve %s %s", ruby, script);
+    vlog("execve %s -I %s -r mruby_lsp/cli -e '%s' -- %s",
+         ruby, lib, BOOTSTRAP, role->target);
     execv(ruby, new_argv);
     fprintf(stderr, "mruby-lsp: execv(%s): %s\n",
             ruby, strerror(errno));

@@ -135,11 +135,13 @@ module MrubyLsp
       return if @rebuilding
 
       @rebuilding = true
-      # The Ruby setup entry is now `mruby-lsp-setup-impl` (the `mruby-lsp-setup`
-      # name belongs to the sandbox launcher). This server is already confined,
-      # so this child inherits the wall + scrubbed env; we run the impl directly.
-      setup = File.join(File.expand_path(File.join(__dir__, "..", "..")), "bin", "mruby-lsp-setup-impl")
-      ok = system(RbConfig.ruby, setup, @workspace,
+      # Re-run setup in a CHILD via the one shared bootstrap (CLI.child_command —
+      # `ruby -I lib -r mruby_lsp/cli -e … -- setup <ws>`). This server is already
+      # confined, so the child inherits the wall + scrubbed env. stdout/stderr go to
+      # /dev/null: setup chatters on stdout, and OUR stdout is the LSP framing
+      # channel — letting it leak would corrupt the protocol stream.
+      require_relative "cli"
+      ok = system(*MrubyLsp::CLI.child_command("setup", @workspace),
                   out: File::NULL, err: File::NULL)
       return unless ok
 

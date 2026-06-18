@@ -320,7 +320,8 @@ gem uninstall mruby-lsp value_bridge
 ## Development
 
 ```bash
-ruby -Ilib bin/mruby-lsp-server /path/to/project   # run the server (Ruby) from the checkout
+# run the server (Ruby) from the checkout, via the CLI dispatcher's server role:
+ruby -Ilib -r mruby_lsp/cli -e 'MrubyLsp::CLI.run(ARGV.shift, ARGV)' -- server /path/to/project
 cc -O2 -o /tmp/mruby-lsp ext/mruby_lsp_launcher/launcher.c   # build the sandbox launcher
 cd test/overlay && for t in *_test.rb; do ruby "$t"; done
 cd editors/vscode && npm install && npm test       # headless extension tests
@@ -329,11 +330,12 @@ cd editors/vscode && npm install && npm test       # headless extension tests
 On installed gems, `mruby-lsp`, `mruby-lsp-setup`, and `mruby-lsp-update` are
 each the SAME compiled sandbox launcher (one binary, installed under all three
 names); it picks its role from its own basename via `/proc/self/exe` and execs
-the matching Ruby entry point (`mruby-lsp-server`, `mruby-lsp-setup-impl`,
-`mruby-lsp-update-impl`). The environment steers nothing — no env var widens the
-allow-list, redirects the target, or toggles a step. The sandbox runs on every
-Linux launch and degrades gracefully if Landlock isn't available — there is no
-opt-out. See `docs/design/SANDBOX-CROSSPLATFORM.md`.
+Ruby on the gem's CLI dispatcher (`lib/mruby_lsp/cli.rb`), handing it the role
+(`server`, `setup`, `update`) — there is no per-command binstub. The environment
+steers nothing — no env var widens the allow-list, redirects the target, or
+toggles a step. The sandbox runs on every Linux launch and degrades gracefully if
+Landlock isn't available — there is no opt-out. See
+`docs/design/SANDBOX-CROSSPLATFORM.md`.
 
 Start with `AGENTS.md` (orientation), then `docs/` for the architecture notes;
 read `docs/GOTCHAS.md` before changing native or build code — it's the project's

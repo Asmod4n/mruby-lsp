@@ -113,8 +113,8 @@ Slice 2 (DONE) is the PHASE split with a network seal on the build:
   phone home. Re-eval re-runs the gem calls but `git_clone_dependency` returns
   early when `.git` exists → zero network. Degrade-safe: unwrapped build if the
   wrapper is absent. The SERVER role is intentionally NOT sealed — an inherited
-  filter would block the fetches its own rebuild-spawn (`mruby-lsp-setup-impl`)
-  must do when a gem is added.
+  filter would block the fetches its own rebuild-spawn (the `setup` role,
+  `lib/mruby_lsp/setup.rb`) must do when a gem is added.
 
 Pending: the FS wall extended to the setup/update launcher roles (today
 `fs_wall=0`) — needs a bounded work-root + mruby_root in the allow-list.

@@ -10,9 +10,10 @@
 #  2. Install `mruby-lsp` itself into the gem's bindir. On Linux this is the
 #     COMPILED sandbox launcher (ext/mruby_lsp_launcher/launcher.c); its job is
 #     to install Landlock + scrub LD_* + close stray fds + PR_SET_NO_NEW_PRIVS,
-#     then execve into `mruby-lsp-server` (the Ruby server script). On non-Linux
-#     hosts the sandbox primitives don't exist, so we ship a shell pass-through
-#     that just execs `mruby-lsp-server`.
+#     then execve Ruby on the gem's CLI dispatcher (lib/mruby_lsp/cli.rb) with the
+#     command's role (server/setup/update). On non-Linux hosts the sandbox
+#     primitives don't exist, so we ship a shell pass-through that runs the same
+#     `ruby … mruby_lsp/cli` directly.
 #
 # Confinement is MANDATORY on Linux — there is no env var to disable it. The
 # launcher's own internal contract is "degrade, don't crash": Landlock ENOSYS
@@ -93,34 +94,34 @@ File.write(
 
 launcher_src = File.expand_path(File.join(gem_root, "ext", "mruby_lsp_launcher", "launcher.c"))
 # mruby-lsp-nonet: the offline-build wrapper (seccomp AF_INET/AF_INET6 deny).
-# Compiled alongside the launcher on Linux; mruby-lsp-setup-impl wraps the
-# OFFLINE build phase with it so fetched code can't reach the network while it
-# runs. Linux-only and degrade-safe: if it's not on disk, setup runs the build
-# unwrapped (the fetch/build FS split still stands).
+# Compiled alongside the launcher on Linux; the setup role (lib/mruby_lsp/setup.rb)
+# wraps the OFFLINE build phase with it so fetched code can't reach the network
+# while it runs. Linux-only and degrade-safe: if it's not on disk, setup runs the
+# build unwrapped (the fetch/build FS split still stands).
 nonet_src = File.expand_path(File.join(gem_root, "ext", "mruby_lsp_launcher", "nonet.c"))
 FileUtils.mkdir_p(target_bindir)
 ext = RbConfig::CONFIG["EXEEXT"] # "" on Unix, ".exe" on Windows
 
 # The launcher is installed under EACH user-facing name; ONE binary dispatches by
-# its own basename (from /proc/self/exe) to the matching gem entry script +
-# confinement profile, then execve's Ruby on it. There is no separate impl binstub
-# (spec.executables is empty); the scripts ship as plain files in the gem's bin/.
+# its own basename (from /proc/self/exe) to the matching ROLE + confinement
+# profile, then execve's Ruby on the gem's CLI dispatcher. There is no separate
+# binstub (spec.executables is empty); the dispatcher ships in the gem's lib/.
 launcher_names = %w[mruby-lsp mruby-lsp-setup mruby-lsp-update]
 target_path = File.join(target_bindir, "mruby-lsp#{ext}")
-# name -> the gem entry SCRIPT the launcher execs (mirrors the C ROLES table).
-role_script = {
-  "mruby-lsp"        => "mruby-lsp-server",
-  "mruby-lsp-setup"  => "mruby-lsp-setup-impl",
-  "mruby-lsp-update" => "mruby-lsp-update-impl",
+# name -> the ROLE string handed to MrubyLsp::CLI.run (mirrors the C ROLES table).
+role_for = {
+  "mruby-lsp"        => "server",
+  "mruby-lsp-setup"  => "setup",
+  "mruby-lsp-update" => "update",
 }
 
 # Baked into the launcher at compile time (absolute, recorded from THIS install —
 # like /proc/self/exe, not redirectable by env/argv): the Ruby that installed us,
-# and the gem's bin/ dir where the entry scripts live. The launcher execve's
-# `<ruby> <script_dir>/<script>`.
-ruby_path  = RbConfig.ruby
-script_dir = File.join(gem_root, "bin")
-defines    = ["-DMRUBY_LSP_RUBY=\"#{ruby_path}\"", "-DMRUBY_LSP_SCRIPTDIR=\"#{script_dir}\""]
+# and the gem's lib/ dir holding the CLI dispatcher. The launcher execve's
+# `<ruby> -I<lib_dir> -r mruby_lsp/cli -e '…' -- <role>`.
+ruby_path = RbConfig.ruby
+lib_dir   = File.join(gem_root, "lib")
+defines   = ["-DMRUBY_LSP_RUBY=\"#{ruby_path}\"", "-DMRUBY_LSP_LIB=\"#{lib_dir}\""]
 
 # The launcher is LINUX-ONLY by design: Landlock + seccomp + PR_SET_NO_NEW_PRIVS
 # are Linux syscalls. macOS / Windows sandboxing is a different mechanism applied
@@ -179,17 +180,17 @@ if linux && File.exist?(launcher_src)
     end
   end
 else
-  # Non-Linux (or missing source): a shell pass-through per name that execs Ruby
-  # DIRECTLY on the gem entry script — no sandbox primitives here, so it runs
-  # unconfined and the server asks the user via the LSP dialog. Works on any host
-  # whose shell understands `#!/bin/sh` (macOS, *BSD). True Windows support is
-  # separate work; see docs/design/SANDBOX-CROSSPLATFORM.md.
+  # Non-Linux (or missing source): a shell pass-through per name that runs Ruby on
+  # the gem's CLI dispatcher with this command's role — no sandbox primitives here,
+  # so it runs unconfined and the server asks the user via the LSP dialog. Works on
+  # any host whose shell understands `#!/bin/sh` (macOS, *BSD). True Windows support
+  # is separate work; see docs/design/SANDBOX-CROSSPLATFORM.md.
   launcher_names.each do |name|
     dst = File.join(target_bindir, "#{name}#{ext}")
     File.write(dst, <<~SH)
       #!/bin/sh
       # #{name} pass-through (no Linux sandbox primitives on this host; unconfined).
-      exec "#{ruby_path}" "#{File.join(script_dir, role_script[name])}" "$@"
+      exec "#{ruby_path}" -I "#{lib_dir}" -r mruby_lsp/cli -e 'MrubyLsp::CLI.run(ARGV.shift, ARGV)' -- #{role_for[name]} "$@"
     SH
     File.chmod(0o755, dst)
   end

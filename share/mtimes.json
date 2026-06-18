@@ -1,9 +1,6 @@
 {
   "LICENSE": 1781816128,
   "README.md": 1781816128,
-  "bin/mruby-lsp-server": 1781824961,
-  "bin/mruby-lsp-setup-impl": 1781819094,
-  "bin/mruby-lsp-update-impl": 1781816128,
   "ext/mruby_lsp_install/extconf.rb": 1781824961,
   "ext/mruby_lsp_launcher/launcher.c": 1781824961,
   "ext/mruby_lsp_launcher/no_network.h": 1781816128,

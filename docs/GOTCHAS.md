@@ -728,8 +728,8 @@ extension's nesting depth AND with whether RubyGems builds under `gems/` or
 knows. The install command convention is root → system, non-root → --user-install,
 so the hook mirrors the SAME check (no path math):
 `Process.uid.zero? ? Gem.bindir : Gem.bindir(Gem.user_dir)`. That is provably the
-dir RubyGems drops the binstubs in for each case, so the launcher co-locates with
-its impl sibling. Record it in install.json and existence-check at consumption.
+dir RubyGems uses for a gem's executables in each case, so the launcher lands on
+PATH. Record it in install.json and existence-check at consumption.
 
 ## `code` is not "the editor"
 codium / code-oss / code can coexist; CLI installs into the wrong one succeed
@@ -959,19 +959,21 @@ The trap that bit us: a prior version computed the target with path math,
   were ORPHANED on `gem uninstall` (you had to `rm` them by hand);
 - known to nobody.
 
-The launcher resolves its impl via `/proc/self/exe` (PATH is bypassed by design —
-the unspoofable-impl-path contract), so the launcher and an impl sibling MUST
-share one dir. In `Gem.bindir` that is automatic: RubyGems installs the
-`-server` / `-setup-impl` / `-update-impl` binstubs there too, so the sibling is
-already present. (The hook still overwrites them with thin `exec` wrappers to the
-canonical `gems/<n>-<v>/bin/<name>`; a `cp` would break the impls'
-`require_relative "../lib/mruby_lsp"`, anchored at their on-disk path.)
+The launcher does NOT PATH-search or resolve a sibling: the install hook bakes
+the Ruby interpreter and this gem's `lib/` dir into the launcher (compile-time
+`-D` defines) and it execve's `ruby -I<lib> -r mruby_lsp/cli -e '…' -- <role>`
+directly. So the only files that must land in `Gem.bindir` are the launcher
+itself (under all three names) and the `mruby-lsp-nonet` build seal — both placed
+there by the hook; there are no RubyGems binstubs at all (`spec.executables` is
+empty). The baked `lib/` sits under the launcher's gem root, which the Landlock RX
+rule (dirname² of `/proc/self/exe`) already covers, so the post-exec `require`
+chain (`mruby_lsp/cli` and the gem set) is allowed.
 
-Uninstall symmetry: RubyGems removes its own binstubs, but the launchers /
-`-nonet` are NOT declared executables, so `lib/rubygems_plugin.rb` registers a
-post-uninstall hook that removes them (by exact name, from the recorded
-`install.json["bin"]` — never a glob, the dir may be shared) plus the out-of-tree
-records and caches. Install and uninstall are then symmetric.
+Uninstall symmetry: there are no binstubs for RubyGems to remove, and the
+launchers / `-nonet` are NOT declared executables, so `lib/rubygems_plugin.rb`
+registers a post-uninstall hook that removes them (by exact name, from the
+recorded `install.json["bin"]` — never a glob, the dir may be shared) plus the
+out-of-tree records and caches. Install and uninstall are then symmetric.
 
 Lesson: never compute an install dir by counting `..` off `__dir__`; ask RubyGems
 (`Gem.bindir`). If you place files RubyGems doesn't track, you own removing them.

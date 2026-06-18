@@ -42,9 +42,10 @@ Gem::Specification.new do |spec|
   # `mruby-lsp-setup`, `mruby-lsp-update` — are produced by the install hook
   # below: on Linux the COMPILED sandbox launcher, elsewhere a shell pass-through.
   # One launcher binary dispatches by its own basename, confines (Landlock +
-  # seccomp marker), then execve's Ruby DIRECTLY on the matching gem entry script.
-  # Those scripts (bin/mruby-lsp-server / -setup-impl / -update-impl) ship as plain
-  # FILES (via spec.files), not as executables, so there is no second binary per
+  # seccomp marker), then execve's Ruby on the gem's CLI dispatcher
+  # (lib/mruby_lsp/cli.rb), handing it the command's role (server/setup/update).
+  # The dispatcher and its setup/update implementations ship as ordinary lib/
+  # files (via spec.files), not as executables, so there is no second binary per
   # command and nothing for RubyGems to collide with on install or orphan on
   # uninstall. Confinement: see docs/design/SANDBOX-CROSSPLATFORM.md.
   spec.executables = []

@@ -22,7 +22,8 @@ static file indexing. Keep that premise in mind; it drives most design decisions
 ## Build & run from a checkout
 
 ```bash
-ruby -Ilib bin/mruby-lsp-server /path/to/project        # run the server (host Ruby)
+# run the server (host Ruby) from the checkout, via the CLI dispatcher:
+ruby -Ilib -r mruby_lsp/cli -e 'MrubyLsp::CLI.run(ARGV.shift, ARGV)' -- server /path/to/project
 cc -O2 -o /tmp/mruby-lsp ext/mruby_lsp_launcher/launcher.c   # build the sandbox launcher
 cd editors/vscode && npm install && npm run compile     # build the extension
 ```

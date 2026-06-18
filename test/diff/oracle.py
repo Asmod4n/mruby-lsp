@@ -177,10 +177,12 @@ def main():
 
     base_env = dict(os.environ)
 
-    # Drive the Ruby server script directly (skipping the sandbox launcher) so
-    # the oracle compares LSP behavior in isolation, not Landlock/seccomp effects.
+    # Drive the CLI dispatcher's server role directly (skipping the sandbox
+    # launcher) so the oracle compares LSP behavior in isolation, not
+    # Landlock/seccomp effects.
     ours_cmd = ["ruby", "-I/tmp/prism-src/lib", "-I/tmp/mruby-lsp-new/lib",
-                "/tmp/mruby-lsp-new/bin/mruby-lsp-server"]
+                "-r", "mruby_lsp/cli", "-e", "MrubyLsp::CLI.run(ARGV.shift, ARGV)",
+                "--", "server"]
     ours_env = dict(base_env, MRUBY_REFLECT_SO=so)
 
     rubylib = ":".join(["/tmp/ruby-lsp/lib", "/tmp/lsp-proto/lib", "/tmp/rbs/lib",
