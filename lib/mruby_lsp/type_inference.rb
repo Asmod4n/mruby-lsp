@@ -2,6 +2,7 @@
 
 require "prism"
 require_relative "inline_type"
+require_relative "c_return_type"
 
 module MrubyLsp
   # Local-variable + method-return type inference. All paths funnel through
@@ -376,8 +377,13 @@ module MrubyLsp
       return nil unless entry
       # Stage 1/2: a precomputed type (buffer AST / irep). Stage 3: a C method
       # with no precomputed type -> resolve lazily via clangd (memoized).
-      entry.return_type ||
-        (index.respond_to?(:c_return_type) ? index.c_return_type(entry) : nil)
+      rt = entry.return_type ||
+           (index.respond_to?(:c_return_type) ? index.c_return_type(entry) : nil)
+      # A constructor that builds a fresh instance of its RECEIVER class (IO.for_fd
+      # -> IO, File.for_fd -> File) can't be a fixed name in the index — it depends
+      # on this call site. clangd reports the RECEIVER sentinel; resolve it to the
+      # receiver class we already have (`klass`), the class the method was called on.
+      rt == CReturnType::RECEIVER ? klass : rt
     end
 
     def external_method_entry(index, klass, name, singleton)

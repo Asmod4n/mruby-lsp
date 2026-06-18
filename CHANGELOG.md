@@ -21,6 +21,11 @@ what mruby "usually" has.
   as you type, layered over the compiled VM with mruby's real semantics.
 - Type inference from the build, overridable by RBS-style `#:` (Ruby) and `//:`
   (C) annotations; declared instance-variable types via `mruby-native-ext-type`.
+  C constructors that return a **fresh instance of their receiver class**
+  (`IO.for_fd` → `IO`, `File.for_fd` → `File`) are inferred from the clangd AST —
+  including when the fresh object is handed back through one or more helper
+  functions (`return io_init(mrb, obj)`) — so completion/hover on the result
+  resolve to the right class.
 
 ### Debugging
 - F5 debugging of `.rb`/`.mrb` via the user's own `mrdb` over the Debug Adapter

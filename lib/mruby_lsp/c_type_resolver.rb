@@ -22,12 +22,18 @@ module MrubyLsp
   # compile_commands.json, parse failure), every lookup returns nil -> Stage 3 is
   # simply off, exactly like the irep gem being absent for Stage 2.
   class CTypeResolver
+    # Max nested helper hops the interprocedural return-type step follows
+    # (`return io_init(mrb, obj)` is one hop). Bounded so a pathological chain can
+    # never stall an editor request; real init-helpers are one or two deep.
+    HOP_LIMIT = 3
+
     def initialize(client)
-      @client = client
-      @ranges = {} # file => { func => { range:, pos: } } | nil  (per-file, once)
-      @types  = {} # [file, func] => class | nil                 (per-function memo)
-      @docs   = {} # [file, func] => String | nil                (per-function memo)
-      @params = {} # [file, func] => [[kind,name],...] | nil      (per-function memo)
+      @client  = client
+      @ranges  = {} # file => { func => { range:, pos: } } | nil  (per-file, once)
+      @types   = {} # [file, func] => class | RECEIVER | nil       (per-function memo)
+      @docs    = {} # [file, func] => String | nil                (per-function memo)
+      @params  = {} # [file, func] => [[kind,name],...] | nil      (per-function memo)
+      @helpers = {} # [file, func] => classify result             (interproc. memo + cycle guard)
     end
 
     def alive? = @client && @client.alive?
@@ -86,9 +92,30 @@ module MrubyLsp
       # wins over the clangd-AST inference (symmetric with the Ruby `#:` path).
       ann = annotation_return(file, rng)
       return ann if ann
-      uri = "file://#{file}"
-      ast = @client.request("textDocument/ast", textDocument: { uri: uri }, range: rng)
-      CReturnType.of(ast)
+      CReturnType.of(function_ast(file, rng), resolve_callee: callee_resolver(file, 1))
+    end
+
+    # The clangd AST subtree for one function (its documentSymbol range).
+    def function_ast(file, rng)
+      @client.request("textDocument/ast", textDocument: { uri: "file://#{file}" }, range: rng)
+    end
+
+    # A callable `name -> CReturnType.classify(<helper>)` for SAME-FILE helpers,
+    # so the return-type analysis can follow `return io_init(mrb, obj)`. Bounded
+    # to HOP_LIMIT nested hops (nil past it -> stop following, never loop). The
+    # memo doubles as a cycle guard: a helper is seeded nil before it is analysed,
+    # so a self/mutually-recursive call sees nil and the chain terminates.
+    def callee_resolver(file, depth)
+      return nil if depth > HOP_LIMIT
+      lambda do |name|
+        key = [file, name]
+        return @helpers[key] if @helpers.key?(key)
+        @helpers[key] = nil
+        rng = ranges_for(file)&.dig(name, :range)
+        @helpers[key] =
+          rng && CReturnType.classify(function_ast(file, rng),
+                                      resolve_callee: callee_resolver(file, depth + 1))
+      end
     end
 
     # The return class named by a `//:` annotation just above the C function, or

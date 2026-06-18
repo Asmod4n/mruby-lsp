@@ -61,6 +61,35 @@ to it. Nothing holds a type that outlives the live VM or an open buffer. A field
 read at query = fast. Degrade: if the gem isn't in the build, the bridge op's
 mrb_module_get raises -> protect -> nil, Stage 2 is silently off.
 
+## Stage 3 (C): "fresh instance of the receiver class" — two clangd-AST footguns
+A C class-method constructor often returns a fresh object of the METHOD'S OWN
+receiver (`IO.for_fd` -> IO, `File.for_fd` -> File), not a fixed class. We detect
+it from the clangd AST and emit `CReturnType::RECEIVER`; `infer_external_call`
+resolves that to the call-site receiver (`klass`) — NOT a name baked into the
+index, because the same C function returns IO for `IO.for_fd` and File for
+`File.for_fd`. Two non-obvious things, both learned only from a REAL build (a
+stubbed TU lies about each):
+
+1. **`mrb_class_ptr` is a MACRO, not a function.** In a real TU
+   `mrb_class_ptr(klass)` expands to `(struct RClass*)(mrb_val_union(klass).p)` —
+   a cast/member/call chain, so there is NO `Call mrb_class_ptr` node to match.
+   Don't pattern-match the spelling; check what the class expression *reads*: it
+   must derive SOLELY from the receiver mrb_value (`value_refs`, following locals
+   and skipping callee names). A fixed class (`mrb_class_get(mrb, "Foo")`) reads
+   `mrb`/a literal, so it correctly does not match.
+2. **ParmVar nodes hang under `FunctionProto`, not the `Function`.** Param names
+   come from `Function -> FunctionProto -> ParmVar*`, never as direct Function
+   children. Without the names the receiver param is unknown and detection fails;
+   this looked like clangd flakiness until the nesting was found.
+
+The fresh object usually flows back through a helper (`return io_init(mrb, obj)`);
+a depth-bounded interprocedural step (`CTypeResolver#callee_resolver`, HOP_LIMIT)
+follows SAME-FILE helpers that hand back one of their own arguments (`io_init`
+returns its `mrb_value` arg -> `[:arg, 1]`). The `[:arg, k]` result is internal —
+`CReturnType.of` never surfaces it (returning your own receiver is ambiguous:
+instance vs class). Verified live: completion on `x` where `x = IO.for_fd(0)`
+offers IO's instance methods.
+
 ## Method visibility model (completion)
 mruby's bare-call built-ins (puts/p/print/raise/lambda/proc/loop) are Kernel
 PRIVATE instance methods; `instance_methods` (public-only reflection) misses them.
