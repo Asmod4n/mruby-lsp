@@ -60,6 +60,7 @@ module MrubyLsp
     end
 
     def lsp_initialized(msg)
+      enforce_sandbox_consent # gate BEFORE any workspace work; may terminate
       populate_index
       nil
     end

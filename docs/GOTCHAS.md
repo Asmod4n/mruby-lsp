@@ -202,6 +202,34 @@ reported once (rename already does this via its `seen` set).
   eval. Reflected NAMES already round-trip fine (C-ext tags UTF-8; symbol bytes
   are config-independent).
 
+## Confinement must be PRE-Ruby; "am I confined?" is read from the kernel
+The launcher confines in a trusted context — a small STATIC binary, BEFORE Ruby
+starts — and then `execve`s Ruby. It must NOT become a Ruby-loaded `.so`: a `.so`
+is `require`d through `$LOAD_PATH`/RubyGems, which a hostile workspace Gemfile,
+`RUBYOPT`, `GEM_PATH`, or a shadowing gem can redirect to a NEUTERED stub — and
+all of Ruby + RubyGems would already have run unconfined before it loaded. The
+static launcher (resolved via `/proc/self/exe`, not PATH) closes both holes.
+
+Order is load-bearing: NNP → Landlock → seccomp, seccomp LAST. Landlock is
+intentionally NOT introspectable (no `/proc` field, no query syscall), so we can't
+ask "is the FS wall up?". seccomp IS reported in `/proc/self/status` (`Seccomp:`),
+so applying a seccomp filter ONLY after Landlock succeeded makes "filter active"
+the truthful "fully confined" marker. The server reads it (SandboxStatus) with NO
+env var and NO flag — both attacker-settable. The seccomp filter is ALLOW-ALL (a
+pure marker): the server spawns the updater/setup (`rake fetch`, needs the
+network) as a child that INHERITS the filter, so a network-deny here would break
+the fetch; the real net seal stays in mruby-lsp-nonet around the BUILD phase,
+stacked on top.
+
+No confinement → FAIL CLOSED with consent. Unconfined (Linux without Landlock) is
+never silent: the server asks via `window/showMessageRequest`, gated on the
+client's declared `window.showMessage` capability — NOT a tty guess (every editor
+opens us over a pipe; tty only distinguishes "bare terminal, no LSP client", which
+the entry script handles before the loop). No dialog support, declined, or no
+answer = no consent → announce via `window/showMessage` and shut down. Platforms
+without Landlock at all (macOS/Windows: no `/proc`) report `:unsupported` and run
+as before — asking there would lock them out, and they could not confine anyway.
+
 ## Environment bootstrap (sandbox)
 - No Ruby preinstalled in this sandbox image (prior images had 3.2.3). Installed
   `ruby3.2` + `ruby3.2-dev` via apt (root, no sudo). Ruby 3.2.3 — matches

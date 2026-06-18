@@ -55,24 +55,26 @@ require_relative File.join(gem_root, "lib", "mruby_lsp", "version")
 version = MrubyLsp::VERSION
 
 # The launcher goes in the SAME directory RubyGems uses for THIS install's
-# executables, so it is on PATH and co-located with the impl binstubs (the
-# /proc/self/exe sibling contract). We ask RubyGems for that directory instead of
-# computing it — a PRIOR version did `expand_path("../../../../bin", __dir__)` and
-# wrote to `Gem.dir/bin`, a directory nobody knows: not on PATH, untracked by
-# RubyGems, so its binaries leaked on uninstall. `__dir__` math is doubly unsafe
-# here: the result shifts with the extension's nesting depth AND with whether
-# RubyGems builds under `gems/` or `extensions/`.
-#
-# The install command convention (see Rakefile / README): root installs into the
-# system gem home, an unprivileged user installs with `--user-install`. RubyGems
-# does NOT switch `Gem.bindir`/`Gem.dir` for `--user-install` — both keep pointing
-# at the SYSTEM paths even though the gem lands in `Gem.user_dir` — so a bare
-# `Gem.bindir` would orphan the launcher in the system bindir during a user
-# install. Mirror the same root check the install command made (empirically
-# verified by installing a probe gem both ways):
-#   root      -> Gem.bindir                 (the Ruby exe dir, e.g. .../versions/X/bin)
-#   non-root  -> Gem.bindir(Gem.user_dir)   (.../.local/share/gem/ruby/X/bin)
-target_bindir = Process.uid.zero? ? Gem.bindir : Gem.bindir(Gem.user_dir)
+# executables. We ASK RubyGems instead of computing it — a prior version did
+# `expand_path("../../../../bin", __dir__)` and wrote to `Gem.dir/bin`, a dir
+# nobody knows: not on PATH, untracked, leaked on uninstall. `__dir__` math is
+# doubly unsafe (it shifts with the extension nesting AND with gems/ vs
+# extensions/ build dirs). `Gem.bindir` is already correct for two of the three
+# install modes, and BOTH must keep working (`rake install` and the VS Code
+# extension's bundled install — keep parity):
+#   - root `gem install`           -> Gem.bindir = the Ruby exe dir.
+#   - `gem install --install-dir D` -> Gem.bindir = D/bin. This is how the VS Code
+#     extension installs the bundled server, and it is user-AGNOSTIC.
+# The one mode it gets wrong is `--user-install` (non-root `rake install`): RubyGems
+# keeps Gem.bindir/Gem.dir on the SYSTEM paths even though the gem lands in
+# Gem.user_dir, so a bare Gem.bindir would orphan the launcher in the system bindir.
+# So: follow Gem.bindir whenever a custom install dir is active (detected as
+# `Gem.bindir != Gem.bindir(Gem.default_dir)` — covers --install-dir / GEM_HOME)
+# OR we are root; only a plain non-root install falls back to the user gem home's
+# bin. RubyGems APIs only — verified installing a probe gem in all three modes,
+# as root AND as a real non-root user.
+custom_install_dir = Gem.bindir != Gem.bindir(Gem.default_dir)
+target_bindir = (custom_install_dir || Process.uid.zero?) ? Gem.bindir : Gem.bindir(Gem.user_dir)
 # `bin_candidates` is read by the VS Code extension when it goes looking for the
 # launcher; the recorded `bin` is the one truth.
 candidates = [target_bindir]
@@ -99,39 +101,49 @@ nonet_src = File.expand_path(File.join(gem_root, "ext", "mruby_lsp_launcher", "n
 FileUtils.mkdir_p(target_bindir)
 ext = RbConfig::CONFIG["EXEEXT"] # "" on Unix, ".exe" on Windows
 
-# The launcher is installed under EACH user-facing name; one binary, it
-# dispatches by its own basename (from /proc/self/exe) to the matching impl
-# sibling + confinement profile. The impl Ruby scripts are the RubyGems-
-# installed `-server` / `-setup-impl` / `-update-impl` binstubs alongside.
+# The launcher is installed under EACH user-facing name; ONE binary dispatches by
+# its own basename (from /proc/self/exe) to the matching gem entry script +
+# confinement profile, then execve's Ruby on it. There is no separate impl binstub
+# (spec.executables is empty); the scripts ship as plain files in the gem's bin/.
 launcher_names = %w[mruby-lsp mruby-lsp-setup mruby-lsp-update]
-# RbConfig::CONFIG["EXEEXT"] is empty on Unix and ".exe" on Windows — the
-# binstub name has to match what RubyGems would put in bindir for that host.
 target_path = File.join(target_bindir, "mruby-lsp#{ext}")
-# name -> impl the (non-Linux) pass-through must exec; mirrors the C ROLES table.
-passthrough_target = {
+# name -> the gem entry SCRIPT the launcher execs (mirrors the C ROLES table).
+role_script = {
   "mruby-lsp"        => "mruby-lsp-server",
   "mruby-lsp-setup"  => "mruby-lsp-setup-impl",
   "mruby-lsp-update" => "mruby-lsp-update-impl",
 }
 
+# Baked into the launcher at compile time (absolute, recorded from THIS install —
+# like /proc/self/exe, not redirectable by env/argv): the Ruby that installed us,
+# and the gem's bin/ dir where the entry scripts live. The launcher execve's
+# `<ruby> <script_dir>/<script>`.
+ruby_path  = RbConfig.ruby
+script_dir = File.join(gem_root, "bin")
+defines    = ["-DMRUBY_LSP_RUBY=\"#{ruby_path}\"", "-DMRUBY_LSP_SCRIPTDIR=\"#{script_dir}\""]
+
 # The launcher is LINUX-ONLY by design: Landlock + seccomp + PR_SET_NO_NEW_PRIVS
-# are Linux syscalls. macOS sandboxing is App Sandbox via a signed entitlement
-# (different mechanism, different C, applied by the kernel at process creation);
-# Windows is a restricted/AppContainer token + Job (set by the parent at
-# CreateProcess) — see docs/design/SANDBOX-CROSSPLATFORM.md. So we only compile
-# on Linux; everywhere else we ship a shell pass-through and `mruby-lsp` still
-# resolves to a working command (the Ruby server runs unconfined).
-#
-# Why not use mkmf to do the build portably? mkmf's stdlib API is designed for
-# building Ruby C extensions (shared libraries linked against libruby), not
-# standalone executables — there is no `create_executable` analogous to
-# `create_makefile`. We do use RbConfig::CONFIG["CC"], which IS mkmf's blessed
-# compiler choice (RbConfig honors --with-cc / the build-time configure), and
-# the -O2/-Wall/-Wextra flags are accepted by every Linux compiler Ruby reports
-# (gcc, clang). On the platforms where these flags wouldn't apply — Windows
-# (msvc /O2 /W4) — we don't compile at all.
+# are Linux syscalls. macOS / Windows sandboxing is a different mechanism applied
+# at process creation — see docs/design/SANDBOX-CROSSPLATFORM.md. So we only
+# compile on Linux; elsewhere a shell pass-through execs Ruby on the script
+# directly (unconfined — the server then asks the user, as on a Linux box without
+# Landlock). mkmf has no `create_executable`, so we drive RbConfig's CC ourselves.
 
 linux = RbConfig::CONFIG["host_os"] =~ /linux/i
+
+# Try a STATIC link first: a static launcher has no dynamic loader, so no
+# LD_PRELOAD/LD_AUDIT can inject into it before it confines. -static-pie keeps
+# ASLR; fall back to -static, then a plain dynamic link (env-scrub still strips
+# LD_*). getpwuid pulls NSS, which warns under static glibc but works for local
+# accounts; an account it can't resolve simply degrades the home allow-list.
+def compile_launcher(cc, out, src, defines)
+  [["-static-pie"], ["-static"], []].each do |link|
+    return :ok if system(cc, "-O2", "-Wall", "-Wextra", *link, *defines, "-o", out, src,
+                         out: File::NULL, err: File::NULL)
+  end
+  # Last attempt, errors visible, so a genuine compile failure is diagnosable.
+  system(cc, "-O2", "-Wall", "-Wextra", *defines, "-o", out, src) ? :ok : :fail
+end
 
 if linux && File.exist?(launcher_src)
   cc = RbConfig::CONFIG["CC"]
@@ -141,10 +153,9 @@ if linux && File.exist?(launcher_src)
           "The Linux sandbox launcher is mandatory; install gcc or clang " \
           "(or set CC) and reinstall."
   end
-  unless system(cc, "-O2", "-Wall", "-Wextra", "-o", target_path, launcher_src)
-    abort "mruby-lsp: launcher build failed (CC=#{cc.inspect} returned " \
-          "non-zero). The Linux sandbox launcher is mandatory; fix the compile " \
-          "error and reinstall."
+  if compile_launcher(cc, target_path, launcher_src, defines) != :ok
+    abort "mruby-lsp: launcher build failed (CC=#{cc.inspect}). The Linux " \
+          "sandbox launcher is mandatory; fix the compile error and reinstall."
   end
   File.chmod(0o755, target_path)
   # Same binary under each name — it picks its role from its own basename.
@@ -156,9 +167,8 @@ if linux && File.exist?(launcher_src)
 
   # The offline-build wrapper. Separate tiny binary (not a launcher role): it
   # takes a command and execs it behind the no-network seccomp filter, so the
-  # build phase can be sealed without touching the launcher's basename dispatch.
-  # Build failure here is NOT fatal — the net seal is defence-in-depth on top of
-  # the FS split, so we warn and continue (setup degrades to an unwrapped build).
+  # build phase can be sealed. Build failure here is NOT fatal — the net seal is
+  # defence-in-depth on top of the FS split, so we warn and continue.
   if File.exist?(nonet_src)
     nonet_path = File.join(target_bindir, "mruby-lsp-nonet#{ext}")
     if system(cc, "-O2", "-Wall", "-Wextra", "-o", nonet_path, nonet_src)
@@ -169,29 +179,21 @@ if linux && File.exist?(launcher_src)
     end
   end
 else
-  # Non-Linux (or missing source): ship a shell pass-through per name. No
-  # sandboxing (primitives are Linux-specific), but each command remains a
-  # working entry on hosts whose shell understands `#!/bin/sh` (macOS, *BSD).
-  # True Windows support — a .cmd shim *plus* a token+Job/AppContainer launcher
-  # in C — is separate work; see docs/design/SANDBOX-CROSSPLATFORM.md.
+  # Non-Linux (or missing source): a shell pass-through per name that execs Ruby
+  # DIRECTLY on the gem entry script — no sandbox primitives here, so it runs
+  # unconfined and the server asks the user via the LSP dialog. Works on any host
+  # whose shell understands `#!/bin/sh` (macOS, *BSD). True Windows support is
+  # separate work; see docs/design/SANDBOX-CROSSPLATFORM.md.
   launcher_names.each do |name|
     dst = File.join(target_bindir, "#{name}#{ext}")
     File.write(dst, <<~SH)
       #!/bin/sh
-      # #{name} pass-through (no Linux sandbox primitives available on this host).
-      exec #{passthrough_target[name]} "$@"
+      # #{name} pass-through (no Linux sandbox primitives on this host; unconfined).
+      exec "#{ruby_path}" "#{File.join(script_dir, role_script[name])}" "$@"
     SH
     File.chmod(0o755, dst)
   end
 end
-
-# The launcher resolves its impl (`-server` / `-setup-impl` / `-update-impl`) as
-# a /proc/self/exe sibling — and those ARE the binstubs RubyGems itself installs
-# into this same `target_bindir` (= the install's EXECUTABLE DIRECTORY). So we
-# write NOTHING for them: the siblings already exist, correct and RubyGems-tracked.
-# We deliberately do not drop our own wrappers at those names — they would collide
-# with RubyGems' binstubs (`gem install` aborts: "<name> conflicts with …"), and
-# overwriting them would orphan files RubyGems otherwise removes on uninstall.
 
 # No-op Makefile that satisfies RubyGems' contract on any Make implementation
 # (GNU make, BSD make, nmake). Single empty rule declared for all three targets

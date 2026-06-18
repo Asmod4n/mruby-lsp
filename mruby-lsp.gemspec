@@ -38,21 +38,23 @@ Gem::Specification.new do |spec|
     ["README.md", "LICENSE"]
 
   spec.bindir = "bin"
-  # The three names editors/users call — `mruby-lsp`, `mruby-lsp-setup`,
-  # `mruby-lsp-update` — are each the COMPILED Linux sandbox launcher, NOT Ruby
-  # binstubs. The install hook below builds the launcher from
-  # ext/mruby_lsp_launcher/launcher.c and writes it to the gem's bindir under all
-  # three names; one binary, it dispatches by its own basename to the matching
-  # impl and confinement profile. The Ruby entry points are shipped as the
-  # `-server` / `-setup-impl` / `-update-impl` siblings and execve'd by the
-  # launcher. Confinement is mandatory; see docs/design/SANDBOX-CROSSPLATFORM.md.
-  spec.executables = ["mruby-lsp-server", "mruby-lsp-setup-impl", "mruby-lsp-update-impl"]
+  # NO RubyGems binstubs. The three user-facing commands — `mruby-lsp`,
+  # `mruby-lsp-setup`, `mruby-lsp-update` — are produced by the install hook
+  # below: on Linux the COMPILED sandbox launcher, elsewhere a shell pass-through.
+  # One launcher binary dispatches by its own basename, confines (Landlock +
+  # seccomp marker), then execve's Ruby DIRECTLY on the matching gem entry script.
+  # Those scripts (bin/mruby-lsp-server / -setup-impl / -update-impl) ship as plain
+  # FILES (via spec.files), not as executables, so there is no second binary per
+  # command and nothing for RubyGems to collide with on install or orphan on
+  # uninstall. Confinement: see docs/design/SANDBOX-CROSSPLATFORM.md.
+  spec.executables = []
 
   # Install-time hook: (1) records the gem's install location in
-  # $XDG_DATA_HOME/mruby-lsp/install.json so the VS Code extension can find the
-  # server without the user editing PATH; (2) compiles the sandbox launcher
-  # (Linux) and drops it into the gem's bindir as `mruby-lsp`. Non-Linux hosts
-  # skip step 2 and ship a pass-through wrapper that execs the Ruby server.
+  # ~/.local/share/mruby-lsp/install.json (passwd-home, env-free) so the VS Code
+  # extension finds the command without the user editing PATH; (2) builds the
+  # sandbox launcher (Linux, static) + the mruby-lsp-nonet build-phase net seal
+  # and drops them in the install's executable dir under all three names. Non-Linux
+  # hosts skip the compile and ship a pass-through that execs Ruby on the script.
   spec.extensions = ["ext/mruby_lsp_install/extconf.rb"]
 
   # >= 1.9.0: the features lean on the code-units position API

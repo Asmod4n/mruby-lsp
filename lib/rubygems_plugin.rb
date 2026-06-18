@@ -61,8 +61,11 @@ Gem.post_uninstall do |uninstaller|
       end
     if bin && File.directory?(bin)
       ext = RbConfig::CONFIG["EXEEXT"]
-      %w[mruby-lsp mruby-lsp-setup mruby-lsp-update mruby-lsp-nonet
-         mruby-lsp-server mruby-lsp-setup-impl mruby-lsp-update-impl].each do |name|
+      # The launcher (under each user-facing name) + the nonet helper are what the
+      # install hook drops here; with spec.executables empty there are no RubyGems
+      # binstubs to clean up. The `-server`/`-impl` entry scripts live inside the
+      # gem dir and go when RubyGems removes the gem.
+      %w[mruby-lsp mruby-lsp-setup mruby-lsp-update mruby-lsp-nonet].each do |name|
         path = File.join(bin, "#{name}#{ext}")
         File.delete(path) if File.file?(path)
       end

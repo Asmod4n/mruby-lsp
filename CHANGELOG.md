@@ -40,8 +40,18 @@ what mruby "usually" has.
 
 ### Security
 - Reflection only — never executes buffer code (no `eval`/`mrb_load_string`).
-  Linux launcher self-confines via Landlock/seccomp; the user's build tree and
-  build config are never modified; setup state lives outside the workspace.
+  On Linux a small STATIC launcher (no dynamic loader, so no `LD_PRELOAD`/`LD_AUDIT`
+  can inject into it) confines BEFORE Ruby starts — Landlock FS wall + a seccomp
+  filter as the final step — then `execve`s Ruby directly on the entry script.
+  The server learns whether it is confined with NO env var and NO flag, by reading
+  `/proc/self/status` (Landlock is not introspectable; the seccomp filter, set only
+  after the wall is up, is the truthful marker). If Landlock is unavailable it
+  FAILS CLOSED: it asks for explicit consent through a native dialog
+  (`window/showMessageRequest`, chosen by the client's declared capability — not a
+  tty guess) and, without consent, announces the shutdown (`window/showMessage`)
+  and exits rather than running unsandboxed silently. Platforms with no Landlock
+  (macOS/Windows) run as before. The user's build tree and config are never
+  modified; setup state lives outside the workspace.
 
 ### Fixed
 - Install: the compiled launchers (`mruby-lsp` / `mruby-lsp-setup` /

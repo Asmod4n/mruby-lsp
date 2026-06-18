@@ -35,4 +35,24 @@ end
 
 require_relative "../lib/mruby_lsp"
 
+# Sandbox gate, INTERACTIVE case only. When launched from a real terminal and the
+# launcher could not confine us (Linux without Landlock), ask here — before the
+# LSP loop — and abort on no. Under an LSP client (stdin is a pipe, not a tty) the
+# server asks instead via a native window/showMessageRequest dialog once the
+# connection is up (BaseServer#enforce_sandbox_consent). :confined / non-Linux
+# pass straight through. No env var, no flag: the answer is the kernel status plus
+# the user's reply.
+require_relative "../lib/mruby_lsp/sandbox_status"
+if MrubyLsp::SandboxStatus.unconfined? && $stdin.tty?
+  warn "mruby-lsp: WARNING — running WITHOUT the filesystem sandbox " \
+       "(Landlock is unavailable on this kernel)."
+  $stderr.print "Continue without the sandbox? [y/N] "
+  answer = ($stdin.gets || "").strip.downcase
+  unless %w[y yes].include?(answer)
+    warn "mruby-lsp: aborted — no sandbox."
+    exit 1
+  end
+  warn "mruby-lsp: continuing UNSANDBOXED by your consent."
+end
+
 MrubyLsp.start

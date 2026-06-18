@@ -19,6 +19,11 @@ module MrubyLsp
       @mutex = Mutex.new
       @shutdown = false
       @terminating = false
+      # Server-initiated requests (e.g. window/showMessageRequest): id -> Queue,
+      # so the reader thread can hand the client's reply back to the waiter.
+      @server_requests = {}
+      @sr_mutex = Mutex.new
+      @sr_seq = 0
       # Per-request lifecycle logging to stderr, off unless the editor turns on
       # tracing (mrubyLsp.trace.server != off sets MRUBY_LSP_TRACE).
       @trace = !(ENV["MRUBY_LSP_TRACE"] || "").empty?
@@ -48,7 +53,9 @@ module MrubyLsp
 
     def read_messages
       @reader.read do |msg|
-        if URGENT_METHODS.include?(msg[:method])
+        if msg[:id] && msg[:method].nil? && (msg.key?(:result) || msg.key?(:error))
+          route_server_response(msg) # a reply to one of OUR requests
+        elsif URGENT_METHODS.include?(msg[:method])
           handle_urgent(msg) # may not return: exit terminates here
         else
           @incoming_queue << msg
@@ -186,6 +193,78 @@ module MrubyLsp
       notify("window/logMessage", { type: type, message: "mruby-lsp: #{text}" })
     end
 
+    # Route a client's reply to one of our server-initiated requests back to the
+    # blocked caller (runs on the reader thread; must not block).
+    def route_server_response(msg)
+      q = @sr_mutex.synchronize { @server_requests.delete(msg[:id]) }
+      q&.push(msg)
+    end
+
+    # Send a server->client request and block (bounded) for the reply. The reply
+    # arrives on the reader thread and is routed via route_server_response, so the
+    # CALLING thread (the worker) must not be the reader. Returns the result, or
+    # nil on timeout / error / a client that doesn't answer. ids are a distinct
+    # string namespace so they can never collide with the client's own request ids.
+    def server_request(method, params, timeout: 30)
+      id = @sr_mutex.synchronize { @sr_seq += 1; "mruby-lsp-srv-#{@sr_seq}" }
+      q  = Queue.new
+      @sr_mutex.synchronize { @server_requests[id] = q }
+      enqueue({ jsonrpc: "2.0", id: id, method: method, params: params })
+      msg =
+        begin
+          require "timeout"
+          Timeout.timeout(timeout) { q.pop }
+        rescue Timeout::Error
+          nil
+        ensure
+          @sr_mutex.synchronize { @server_requests.delete(id) }
+        end
+      msg && msg[:error].nil? ? msg[:result] : nil
+    end
+
+    # The sandbox decision for an LSP client (non-tty). Called once after
+    # `initialized`. The interactive/TTY case is handled in the entry script
+    # BEFORE the LSP loop; here we are always under a client, so we ask via a
+    # native dialog (window/showMessageRequest). :confined and :unsupported never
+    # reach here. NEVER run unconfined silently: no consent (or no dialog support)
+    # -> abort. No env var, no flag — the answer comes from the kernel status plus
+    # the user's button.
+    CONTINUE_UNSANDBOXED = "Continue without sandbox"
+    def enforce_sandbox_consent
+      require_relative "sandbox_status"
+      return unless SandboxStatus.unconfined?
+      warning = "mruby-lsp could not enable its filesystem sandbox " \
+                "(Landlock is unavailable on this kernel)."
+      # Running unsandboxed requires the user's EXPLICIT consent. We get it only
+      # through the answerable dialog (window/showMessageRequest), which the client
+      # advertises as the window.showMessage capability — checked, never a tty
+      # guess. If the client CAN'T show a dialog, or the user declines, or no
+      # answer comes, there is no consent — and with no consent we FAIL CLOSED.
+      consent =
+        if @client_capabilities.to_h.dig(:window, :showMessage)
+          res = server_request("window/showMessageRequest", {
+            type: 2, # Warning
+            message: "#{warning} Run without it?",
+            actions: [{ title: CONTINUE_UNSANDBOXED }, { title: "Abort" }],
+          })
+          res && res[:title] == CONTINUE_UNSANDBOXED
+        else
+          false # cannot ask -> cannot consent
+        end
+
+      if consent
+        log_message("running WITHOUT the sandbox, by explicit user consent", type: 2)
+      else
+        # No explicit consent (declined, no answer, or no dialog support): shut
+        # down. ANNOUNCE it visibly (window/showMessage, not just the log) so the
+        # client/user sees WHY the connection ends; terminate() flushes the queue
+        # before the process exits.
+        show_message("#{warning} mruby-lsp needs the sandbox, or your explicit " \
+                     "consent to run without it; shutting down.", type: 1)
+        terminate(1)
+      end
+    end
+
     # Raised when a handler outruns REQUEST_TIMEOUT_SECONDS.
     class RequestTimeout < StandardError; end
 
@@ -308,6 +387,10 @@ module MrubyLsp
     def lsp_initialize(msg)
       # Per-request timeout budget from initializationOptions (or env/default).
       configure_request_timeout(msg.dig(:params, :initializationOptions))
+      # Remember the client's capabilities — the reliable per-client signal for
+      # whether it can show an answerable dialog (window/showMessageRequest),
+      # used by the sandbox-consent gate. NOT a tty guess.
+      @client_capabilities = msg.dig(:params, :capabilities) || {}
       # Negotiate position encoding exactly like ruby-lsp: no offer -> utf-16;
       # utf-8 if offered; else utf-16 if offered; else utf-32. Drives all
       # column<->byte math via Locator and the semantic-token code-unit cache.

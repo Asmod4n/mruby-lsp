@@ -87,6 +87,22 @@
 # define MRUBY_LSP_HAVE_LANDLOCK 0
 #endif
 
+/* seccomp: used here ONLY as the "I am confined" MARKER. The launcher applies a
+ * permissive (allow-all) filter as the FINAL confinement step, reached only after
+ * Landlock succeeded; the server then reads /proc/self/status `Seccomp:` to learn
+ * env- and arg-free whether it is confined (Landlock itself is not introspectable).
+ * Why ALLOW-ALL and not a real restriction: the server spawns the updater/setup
+ * (`rake fetch`, needs the network) as a CHILD, which INHERITS this filter — a
+ * network-deny here would break the fetch. The dedicated network seal stays where
+ * it belongs: mruby-lsp-nonet around the offline BUILD phase (stacked on top). */
+#if defined(__has_include)
+# if __has_include(<linux/seccomp.h>) && __has_include(<linux/filter.h>)
+#  include <linux/seccomp.h>
+#  include <linux/filter.h>
+#  define MRUBY_LSP_HAVE_SECCOMP 1
+# endif
+#endif
+
 /* ── logging (compile-time only; never env-driven) ───────────────────────── */
 #ifdef MRUBY_LSP_SANDBOX_VERBOSE
 static void vlog(const char *fmt, ...)
@@ -140,14 +156,33 @@ static void scrub_env(void)
     }
 }
 
+/* ── 3. seccomp MARKER (allow-all; the confinement signal, not a restriction) ─ */
+/* Returns 0 if a filter was installed (Seccomp: 2 becomes visible in
+ * /proc/self/status), -1 otherwise. Requires NO_NEW_PRIVS (set by main first).
+ * Deliberately allow-all: see the header note — children need the network. */
+static int apply_seccomp_marker(void)
+{
+#if MRUBY_LSP_HAVE_SECCOMP
+    struct sock_filter f[] = { BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW) };
+    struct sock_fprog prog = { .len = 1, .filter = f };
+    if (syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) == 0) return 0;
+    /* Fallback for kernels/libcs without the seccomp() wrapper path. */
+    if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0) == 0) return 0;
+    vlog("seccomp marker failed: %s", strerror(errno));
+    return -1;
+#else
+    return -1;
+#endif
+}
+
 /* ── role dispatch ────────────────────────────────────────────────────────── */
 /* One launcher binary, installed under each user-facing name. WHICH executable
  * we are is decided by our OWN real basename (from /proc/self/exe — kernel
- * truth, not the spoofable argv[0], not env). The name selects the impl script
- * we exec and whether the Landlock FS wall applies. */
+ * truth, not the spoofable argv[0], not env). The name selects the gem entry
+ * script we exec (via Ruby) and whether the Landlock FS wall applies. */
 struct role {
     const char *name;    /* our installed basename */
-    const char *target;  /* impl script we exec, a sibling in our own bindir */
+    const char *target;  /* gem entry script we execve via Ruby (baked SCRIPTDIR) */
     int         fs_wall; /* 1: install the Landlock FS allow-list. 0: process
                           * hardening only — the build/fetch FS footprint is not
                           * yet walled (mruby_root can live outside the
@@ -174,26 +209,31 @@ static const struct role *current_role(void)
     return NULL;
 }
 
-/* ── target resolution: the impl script, next to our REAL path ────────────── */
-/* Resolved exclusively from /proc/self/exe — the kernel's record of the binary
- * actually running, which neither an env var nor a spoofed argv[0] can forge.
- * The install hook co-places each impl script in the same bindir as this
- * launcher (and self_gemhome's dirname^2 of the same path is the gem root, so
- * the target always sits under the Landlock RX rule). No PATH search, no env
- * override: either it is our sibling, or we fail loudly. */
-static char *resolve_target(const char *target_name)
+/* ── target resolution: Ruby + the gem entry script, baked in at install ───── */
+/* The Ruby interpreter and the gem's bin/ directory are compiled into THIS binary
+ * by the install hook (ext/mruby_lsp_install/extconf.rb), recorded from the exact
+ * gem being installed. Both are absolute and — like /proc/self/exe — cannot be
+ * redirected by env or argv. We execve Ruby DIRECTLY on the gem entry script: no
+ * separate impl binstub, no PATH search. The script lives in the gem dir, which
+ * sits under self_gemhome (dirname^2 of our own path) and so under the Landlock RX
+ * rule. Missing/empty defines (a dev build that forgot to bake them) -> fail loud. */
+#ifndef MRUBY_LSP_RUBY
+# define MRUBY_LSP_RUBY ""
+#endif
+#ifndef MRUBY_LSP_SCRIPTDIR
+# define MRUBY_LSP_SCRIPTDIR ""
+#endif
+
+/* "<scriptdir>/<script>" (heap), or NULL if unbaked / unreadable / too long. */
+static char *script_path(const char *script)
 {
-    char exe[4096];
-    ssize_t r = readlink("/proc/self/exe", exe, sizeof exe - 1);
-    if (r <= 0) return NULL;
-    exe[r] = '\0';
-    char *slash = strrchr(exe, '/');
-    if (!slash) return NULL;
-    *slash = '\0';                       /* exe -> our bindir */
-    char cand[sizeof exe + 64];
-    int wrote = snprintf(cand, sizeof cand, "%s/%s", exe, target_name);
-    if (wrote < 0 || (size_t)wrote >= sizeof cand) return NULL;
-    if (access(cand, X_OK) == 0) return strdup(cand);
+    if (MRUBY_LSP_SCRIPTDIR[0] == '\0') return NULL;
+    size_t need = strlen(MRUBY_LSP_SCRIPTDIR) + 1 + strlen(script) + 1;
+    char *p = malloc(need);
+    if (!p) return NULL;
+    snprintf(p, need, "%s/%s", MRUBY_LSP_SCRIPTDIR, script);
+    if (access(p, R_OK) == 0) return p;
+    free(p);
     return NULL;
 }
 
@@ -413,40 +453,51 @@ int main(int argc, char **argv)
         vlog("PR_SET_NO_NEW_PRIVS failed: %s", strerror(errno));
 
     if (role->fs_wall) {
-        if (apply_landlock(workspace) < 0) {
-            /* Per the design: never fail-closed on a sandbox setup error. The
-             * env-scrub and NNP bits above already happened. */
-            vlog("landlock: not active — %s runs with env-scrub + NNP only",
+        if (apply_landlock(workspace) == 0) {
+            /* MARKER, last: only now — Landlock up — do we set the seccomp filter,
+             * so an active filter (visible in /proc/self/status) truthfully means
+             * "fully confined". The server reads that to decide, env/arg-free,
+             * whether to run silently or to ask the user (see SandboxStatus). */
+            apply_seccomp_marker();
+        } else {
+            /* Landlock could NOT be applied (old kernel, disabled, error). We do
+             * NOT silently pretend: we leave the seccomp marker UNSET, so the
+             * server sees Seccomp:0 and prompts the user (continue/abort) instead
+             * of running unconfined behind the user's back. env-scrub + NNP still
+             * applied above. */
+            vlog("landlock: not active — %s will report itself UNCONFINED",
                  role->name);
         }
     } else {
-        /* Build/fetch roles: process hardening only this iteration. The FS wall
-         * waits on the fetch/build dir split so it can't fail the build. */
-        vlog("role %s: process hardening only (FS wall deferred)", role->name);
+        /* Build/fetch roles (setup/update): process hardening only. NO Landlock
+         * (the build needs broad FS) and NO seccomp marker (they aren't the
+         * confined server, and they spawn `rake fetch` which needs the network). */
+        vlog("role %s: process hardening only (NNP + env-scrub)", role->name);
     }
 
-    /* seccomp: deferred (see docs/design/SANDBOX-CROSSPLATFORM.md). */
-
-    /* Resolve and exec the impl — strictly our on-disk sibling. */
-    char *target = resolve_target(role->target);
-    if (!target) {
+    /* Exec Ruby DIRECTLY on the gem entry script (baked at install — no separate
+     * impl binstub, no PATH). Landlock/seccomp/NNP are inherited across execve. */
+    const char *ruby = MRUBY_LSP_RUBY;
+    char *script = script_path(role->target);
+    if (ruby[0] == '\0' || !script) {
         fprintf(stderr,
-                "mruby-lsp: could not locate '%s' next to this launcher. It must "
-                "be co-installed in the same bindir (resolved via /proc/self/exe, "
-                "not PATH).\n", role->target);
+                "mruby-lsp: gem entry not found (ruby=%s, script=%s). The install "
+                "hook bakes these in; reinstall the gem.\n",
+                ruby[0] ? ruby : "(unbaked)", script ? script : "(unbaked)");
         return 127;
     }
 
-    /* Build new argv: keep argv[1..] but exec target instead of self. */
-    char **new_argv = calloc((size_t)argc + 1, sizeof(char *));
+    /* new argv: ruby <script> <our args...> */
+    char **new_argv = calloc((size_t)argc + 2, sizeof(char *));
     if (!new_argv) { perror("calloc"); return 1; }
-    new_argv[0] = target;
-    for (int i = 1; i < argc; i++) new_argv[i] = argv[i];
-    new_argv[argc] = NULL;
+    new_argv[0] = (char *)ruby;
+    new_argv[1] = script;
+    for (int i = 1; i < argc; i++) new_argv[i + 1] = argv[i];
+    new_argv[argc + 1] = NULL;
 
-    vlog("execve %s", target);
-    execv(target, new_argv);
+    vlog("execve %s %s", ruby, script);
+    execv(ruby, new_argv);
     fprintf(stderr, "mruby-lsp: execv(%s): %s\n",
-            target, strerror(errno));
+            ruby, strerror(errno));
     return 127;
 }
