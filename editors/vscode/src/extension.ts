@@ -219,9 +219,6 @@ async function isMrubyWorkspace(root: string): Promise<boolean> {
   return found.length > 0;
 }
 
-// ── locate the mruby-lsp binary. The gem records its install location at
-// install time in $XDG_DATA_HOME/mruby-lsp/install.json (so the user never has
-// to edit PATH). Order: explicit setting -> install.json bin dir -> bare name.
 // ── locate the mruby-lsp binary. The gem's install hook recorded its exact
 // install location at gem-install time in ~/.local/share/mruby-lsp/install.json
 // (RubyGems knows the bindir then). We just read it — no PATH, no guessing.
@@ -256,8 +253,10 @@ function resolveServerCommand(): string {
 // The gem install record, written by the install hook.
 function installRecord(): { bin?: string; bin_candidates?: string[]; version?: string; ruby?: string } | undefined {
   try {
-    const xdg = process.env["XDG_DATA_HOME"] || path.join(process.env["HOME"] || "~", ".local", "share");
-    const f = path.join(xdg, "mruby-lsp", "install.json");
+    // FIXED path: ENV-FREE home (passwd DB via os.userInfo), NOT
+    // $XDG_DATA_HOME/$HOME — the same rule the install hook writes with and the
+    // state store reads, so the record is always at the one dir env can't move.
+    const f = path.join(homeDir(), ".local", "share", "mruby-lsp", "install.json");
     if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, "utf8"));
   } catch (e) {
     output.appendLine(`install.json read error: ${String(e)}`);

@@ -14,7 +14,8 @@
 #   4. record     — write paths.env so the server + editor extension find it all
 #
 # Idempotent: re-running rebuilds only what changed (rake's own dependency
-# tracking). All artifacts live under $XDG_CACHE_HOME/mruby-lsp/<project-key>/.
+# tracking). All artifacts live under <passwd-home>/.cache/mruby-lsp/<project-key>/
+# — a FIXED path from the passwd DB (BuildDiscovery.cache_dir), never $XDG/$HOME.
 
 require "fileutils"
 require "time"
@@ -49,8 +50,10 @@ def locate_nonet
   rescue SystemCallError
     # $0 not a real path (unusual launch); skip the sibling probe
   end
+  # FIXED path: the install hook wrote install.json under the passwd-DB home
+  # (env-free), so read it from the same place — never $XDG_DATA_HOME/$HOME.
   install = File.join(
-    ENV["XDG_DATA_HOME"] || File.join(Dir.home, ".local", "share"),
+    MrubyLsp::Discovery::BuildDiscovery.home_dir, ".local", "share",
     "mruby-lsp", "install.json"
   )
   if File.file?(install)

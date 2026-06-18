@@ -118,6 +118,14 @@ namespace :gem do
   desc "Build (auto-bumps) and install the gem"
   task install: :build do
     Dir.chdir(__dir__) do
+      # Root installs into the system gem home; an unprivileged user can't write
+      # there, so fall back to `--user-install` (Gem.user_dir, always writable).
+      # The install hook records whichever bindir RubyGems used (it makes the same
+      # root check), so discovery + uninstall follow automatically. Same flag for
+      # BOTH gems so mruby-lsp's `add_dependency "value_bridge"` resolves in the
+      # one gem home this install populated.
+      user_flag = Process.uid.zero? ? "" : " --user-install"
+
       # Internal dependency: build + install the vendored value_bridge gem first
       # so mruby-lsp's `add_dependency "value_bridge"` resolves locally -- no
       # Gemfile, not published. Same source the mruby build + reflect ext use.
@@ -128,11 +136,11 @@ namespace :gem do
         FileUtils.mkdir_p("pkg")
         vbver = `#{RbConfig.ruby} -r./lib/value_bridge/version -e "print ValueBridge::VERSION"`
         sh "gem build value_bridge.gemspec --output pkg/value_bridge-#{vbver}.gem"
-        sh "gem install pkg/value_bridge-#{vbver}.gem"
+        sh "gem install#{user_flag} pkg/value_bridge-#{vbver}.gem"
       end
 
       version = `#{RbConfig.ruby} -r./lib/mruby_lsp/version -e "print MrubyLsp::VERSION"`
-      sh "gem install pkg/mruby-lsp-#{version}.gem"
+      sh "gem install#{user_flag} pkg/mruby-lsp-#{version}.gem"
     end
   end
 end

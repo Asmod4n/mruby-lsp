@@ -4,7 +4,8 @@
 #
 #  1. Record WHERE this gem installed its executables, so the VS Code extension
 #     can find `mruby-lsp` and `mruby-lsp-setup` without the user editing PATH.
-#     Written to $XDG_DATA_HOME/mruby-lsp/install.json (default ~/.local/share/).
+#     Written to ~/.local/share/mruby-lsp/install.json, with the home resolved
+#     ENV-FREE from the passwd database — NOT $XDG_DATA_HOME/$HOME.
 #
 #  2. Install `mruby-lsp` itself into the gem's bindir. On Linux this is the
 #     COMPILED sandbox launcher (ext/mruby_lsp_launcher/launcher.c); its job is
@@ -33,33 +34,47 @@
 require "fileutils"
 require "json"
 require "rbconfig"
+require "etc"
 
-xdg = ENV["XDG_DATA_HOME"] || File.join(Dir.home, ".local", "share")
-data_dir = File.join(xdg, "mruby-lsp")
+# WHERE install.json lands is a FIXED path: the home comes from the passwd
+# database (getpwuid), never $HOME/$XDG_DATA_HOME. This is the same env-free rule
+# the build cache, the setup-state store, the C launcher (getpwuid), and the VS
+# Code extension (os.userInfo) all follow — so every side agrees on the one
+# directory and the environment can't relocate the record somewhere else.
+home =
+  begin
+    Etc.getpwuid(Process.uid).dir
+  rescue ArgumentError, SystemCallError
+    Dir.home   # last resort only if the uid has no passwd entry
+  end
+data_dir = File.join(home, ".local", "share", "mruby-lsp")
 FileUtils.mkdir_p(data_dir)
 
 gem_root = File.expand_path(File.join(__dir__, "..", ".."))
 require_relative File.join(gem_root, "lib", "mruby_lsp", "version")
 version = MrubyLsp::VERSION
 
-# The launcher MUST sit next to its impl sibling -- it resolves the impl via
-# /proc/self/exe and PATH is bypassed by design (the unspoofable-impl-path
-# contract is part of the confinement model). RubyGems writes the gem's own
-# binstubs (`-server` / `-setup-impl` / `-update-impl`) to `Gem.bindir`, which
-# diverges from `gem_dir/bin` on rbenv, on system Ruby on Debian/Ubuntu (where
-# Gem.bindir = /usr/bin -- not ours to scribble on), and any other RubyGems
-# with a configured EXECUTABLE DIRECTORY.
+# The launcher goes in the SAME directory RubyGems uses for THIS install's
+# executables, so it is on PATH and co-located with the impl binstubs (the
+# /proc/self/exe sibling contract). We ask RubyGems for that directory instead of
+# computing it — a PRIOR version did `expand_path("../../../../bin", __dir__)` and
+# wrote to `Gem.dir/bin`, a directory nobody knows: not on PATH, untracked by
+# RubyGems, so its binaries leaked on uninstall. `__dir__` math is doubly unsafe
+# here: the result shifts with the extension's nesting depth AND with whether
+# RubyGems builds under `gems/` or `extensions/`.
 #
-# So we don't follow Gem.bindir. We pin everything to the gem's own bindir
-# (`gem_dir/bin`, always under RubyGems' control) and drop COPIES of the impl
-# source files from gems/<name>-<v>/bin/ alongside the compiled launcher --
-# the launcher's neighbor contract is satisfied without reaching into Gem.bindir.
-# The binstubs RubyGems still installs in Gem.bindir become harmless aliases.
-target_bindir = File.expand_path(File.join(__dir__, "..", "..", "..", "..", "bin"))
-# `bin_candidates` is read by the VS Code extension when it goes looking for
-# the launcher. Keep it derived from path math, not ENV -- Gem.user_dir reads
-# GEM_HOME/HOME and would record a different path than the one a clean install
-# actually populated. target_bindir is the one truth here.
+# The install command convention (see Rakefile / README): root installs into the
+# system gem home, an unprivileged user installs with `--user-install`. RubyGems
+# does NOT switch `Gem.bindir`/`Gem.dir` for `--user-install` — both keep pointing
+# at the SYSTEM paths even though the gem lands in `Gem.user_dir` — so a bare
+# `Gem.bindir` would orphan the launcher in the system bindir during a user
+# install. Mirror the same root check the install command made (empirically
+# verified by installing a probe gem both ways):
+#   root      -> Gem.bindir                 (the Ruby exe dir, e.g. .../versions/X/bin)
+#   non-root  -> Gem.bindir(Gem.user_dir)   (.../.local/share/gem/ruby/X/bin)
+target_bindir = Process.uid.zero? ? Gem.bindir : Gem.bindir(Gem.user_dir)
+# `bin_candidates` is read by the VS Code extension when it goes looking for the
+# launcher; the recorded `bin` is the one truth.
 candidates = [target_bindir]
 
 File.write(

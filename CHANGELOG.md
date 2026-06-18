@@ -44,15 +44,22 @@ what mruby "usually" has.
   build config are never modified; setup state lives outside the workspace.
 
 ### Fixed
-- Install: the launcher and its impl sibling now share a bindir on setups
-  where `gem env`'s EXECUTABLE DIRECTORY differs from `gem_dir/bin` (rbenv,
-  Debian/Ubuntu system Ruby with `/usr/bin`, any custom RubyGems prefix).
-  The install hook used to write launchers to `gem_dir/bin` while RubyGems
-  installed the `-server` / `-setup-impl` / `-update-impl` binstubs to
-  `Gem.bindir`. The launcher resolves its impl via `/proc/self/exe`, PATH
-  is bypassed by design, so every launcher aborted with `could not locate
-  '…' next to this launcher`. Now the install hook drops thin shell
-  wrappers next to the launcher in `gem_dir/bin` that `exec` the canonical
-  impl in `gems/<n>-<v>/bin/`. `gem_dir/bin` is always under RubyGems'
-  control regardless of `EXECUTABLE DIRECTORY`, so nothing lands in
-  `/usr/bin` (or any other system-managed prefix). See `docs/GOTCHAS.md`.
+- Install: the compiled launchers (`mruby-lsp` / `mruby-lsp-setup` /
+  `mruby-lsp-update` / `mruby-lsp-nonet`) now go to `Gem.bindir` — the
+  configured EXECUTABLE DIRECTORY (honors `--bindir`, user vs system install,
+  rbenv) — alongside RubyGems' own `-server` / `-setup-impl` / `-update-impl`
+  binstubs. They are therefore on PATH (so `mruby-lsp-setup` resolves as a
+  command), and the launcher's `/proc/self/exe` impl-sibling contract holds in
+  that same dir. A prior version derived the bindir with path math and overshot
+  to `Gem.dir/bin` — a directory nobody knows: not on PATH, and untracked by
+  RubyGems, so its binaries were orphaned on `gem uninstall`.
+- Install/uninstall are now symmetric: a `lib/rubygems_plugin.rb` post-uninstall
+  hook removes everything `gem uninstall` can't — the non-declared launcher /
+  nonet files, plus the out-of-tree records (`install.json`, per-workspace setup
+  state, and the build caches under `~/.local/share/mruby-lsp` and
+  `~/.cache/mruby-lsp`) — once the last version is gone. Nothing is left behind.
+- All of our own paths (`install.json`, setup state, build cache) resolve from a
+  FIXED passwd-home base (the same env-free rule the C launcher already uses),
+  never `$XDG_DATA_HOME`/`$XDG_CACHE_HOME`/`$HOME`, so a stray environment can't
+  relocate where records land — install, setup, server, and the editor extension
+  always agree on the one directory.

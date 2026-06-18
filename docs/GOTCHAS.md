@@ -689,11 +689,19 @@ our rescue. If a feature needs three lines of structural logic, write the
 three lines; a dependency consumed through its private API is strictly worse
 than no dependency.
 
-## Gem.bindir is NOT where this gem's binstubs are
-It is the default-installation bindir. User installs put binstubs in
-Gem.user_dir/bin. The only authoritative source for THIS gem's location at
-install time is the install path itself (derivable from __dir__ inside a
-hook); record candidates and existence-check at consumption time.
+## Bare Gem.bindir is wrong for a --user-install; do NOT use __dir__
+`Gem.bindir` (no arg) is the DEFAULT (system) bindir. RubyGems does NOT switch it
+for `gem install --user-install` — `Gem.bindir` AND `Gem.dir` keep pointing at the
+system paths even though the gem and its binstubs land in `Gem.user_dir/bin`
+(verified by installing a probe gem as a real non-root user). And `__dir__` math
+inside the install hook is NOT a reliable substitute: the result shifts with the
+extension's nesting depth AND with whether RubyGems builds under `gems/` or
+`extensions/` — that exact trap once wrote launchers to a `Gem.dir/bin` nobody
+knows. The install command convention is root → system, non-root → --user-install,
+so the hook mirrors the SAME check (no path math):
+`Process.uid.zero? ? Gem.bindir : Gem.bindir(Gem.user_dir)`. That is provably the
+dir RubyGems drops the binstubs in for each case, so the launcher co-locates with
+its impl sibling. Record it in install.json and existence-check at consumption.
 
 ## `code` is not "the editor"
 codium / code-oss / code can coexist; CLI installs into the wrong one succeed
@@ -906,34 +914,36 @@ answers EVERY accessor every reachable inference branch touches — the overlay
 tests used a real ParseResult as `.ast`, so they never exercised the gap; a
 commented real-world file did.
 
-## Install: `Gem.bindir` ≠ `gem_dir/bin` (rbenv, system Ruby, custom prefix)
+## Install: put launchers in `Gem.bindir`, NOT a path computed off `__dir__`
 
-The install hook (`ext/mruby_lsp_install/extconf.rb`) computes its target
-bindir relative to its own location:
-`File.expand_path("../../../../bin", __dir__)` → `gem_dir/bin`. On a stock
-RubyGems install that equals `Gem.bindir`, and everything lands in one
-place. Under rbenv, under Debian/Ubuntu's system Ruby (where Gem.bindir is
-`/usr/bin` — not ours to scribble in), under any `gem env` with a
-configured `EXECUTABLE DIRECTORY`, the two diverge: RubyGems puts the
-`-server` / `-setup-impl` / `-update-impl` binstubs in `Gem.bindir`, the
-install hook drops the launcher and its aliases in `gem_dir/bin`. They MUST
-live together — the launcher resolves its impl via `/proc/self/exe` and
-refuses to fall back to PATH (the unspoofable-impl-path contract is part of
-the confinement design). Result: every command died at startup with
-`could not locate '<name>' next to this launcher`.
+The install hook (`ext/mruby_lsp_install/extconf.rb`) must drop the compiled
+launchers (`mruby-lsp` / `-setup` / `-update` / `-nonet`) where this install's
+executables go. The right answer is `Gem.bindir` — the configured EXECUTABLE
+DIRECTORY (honors `--bindir`, user vs system install, rbenv).
 
-Tempting wrong fix: flip the launcher's target to `Gem.bindir`. That puts
-files in `/usr/bin` on system Ruby, which is package-managed and not ours
-to touch. Don't.
+The trap that bit us: a prior version computed the target with path math,
+`File.expand_path("../../../../bin", __dir__)`. The intent (per its comment) was
+`gem_dir/bin`, but the math has one `..` too many and resolves to **`Gem.dir/bin`**
+(`…/gems/<api>/bin`) — a directory that is:
+- NOT `Gem.bindir` (the real exe dir, `…/versions/<v>/bin` under rbenv), so the
+  launchers were never on PATH → `mruby-lsp-setup` "command not found";
+- NOT inside any per-gem directory, so RubyGems never tracked the files → they
+  were ORPHANED on `gem uninstall` (you had to `rm` them by hand);
+- known to nobody.
 
-Real fix: stay in `gem_dir/bin` (always under RubyGems' control) and put
-thin shell wrappers there for the impls — each wrapper just `exec`s the
-canonical script at `gems/<n>-<v>/bin/<name>`. A `cp` is wrong because the
-impls do `require_relative "../lib/mruby_lsp"`, which is anchored at their
-on-disk location; the wrapper preserves `__FILE__` for the script that
-actually runs. `gem_root` is derived from `__dir__` (no ENV), so the
-absolute path embedded in the wrapper is stable for the gem's lifetime.
+The launcher resolves its impl via `/proc/self/exe` (PATH is bypassed by design —
+the unspoofable-impl-path contract), so the launcher and an impl sibling MUST
+share one dir. In `Gem.bindir` that is automatic: RubyGems installs the
+`-server` / `-setup-impl` / `-update-impl` binstubs there too, so the sibling is
+already present. (The hook still overwrites them with thin `exec` wrappers to the
+canonical `gems/<n>-<v>/bin/<name>`; a `cp` would break the impls'
+`require_relative "../lib/mruby_lsp"`, anchored at their on-disk path.)
 
-Lesson: when the launcher's "neighbor" contract collides with RubyGems'
-bindir policy, build the neighbor yourself; don't move the launcher into a
-shared system bindir to satisfy it.
+Uninstall symmetry: RubyGems removes its own binstubs, but the launchers /
+`-nonet` are NOT declared executables, so `lib/rubygems_plugin.rb` registers a
+post-uninstall hook that removes them (by exact name, from the recorded
+`install.json["bin"]` — never a glob, the dir may be shared) plus the out-of-tree
+records and caches. Install and uninstall are then symmetric.
+
+Lesson: never compute an install dir by counting `..` off `__dir__`; ask RubyGems
+(`Gem.bindir`). If you place files RubyGems doesn't track, you own removing them.
