@@ -94,7 +94,7 @@ is incompatible with this premise.
     `details.name` (here: `Asmod4n`, `791770`, `Hendrik`). For someone else, use
     `search_users`.
   - GitHub's privacy-preserving commit email is `<id>+<login>@users.noreply.
-    github.com` → `791770+Asmod4n@users.noreply.github.com`. This is what GitHub
+    github.com`. This is what GitHub
     attributes back to the account; do NOT invent a plain address.
   - Apply it: `git -c user.name=<name> -c user.email=<id>+<login>@users.
     noreply.github.com commit --amend --reset-author` (or set it before
