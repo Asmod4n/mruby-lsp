@@ -42,18 +42,25 @@ gem_root = File.expand_path(File.join(__dir__, "..", ".."))
 require_relative File.join(gem_root, "lib", "mruby_lsp", "version")
 version = MrubyLsp::VERSION
 
-# Where RubyGems is ACTUALLY putting binstubs for this install. Under rbenv
-# (and any setup where `gem env` reports EXECUTABLE DIRECTORY != gem_dir/bin)
-# the relative `__dir__/../../../../bin` walk lands in the gem install dir,
-# but RubyGems writes the `-server` / `-setup-impl` / `-update-impl` binstubs
-# to Gem.bindir. The launcher uses /proc/self/exe to find its impl sibling
-# (PATH is bypassed by design), so both MUST share a bindir. Use Gem.bindir.
-target_bindir = Gem.bindir
-# derived_bin kept as a back-compat candidate for the VS Code extension's
-# install.json lookup -- on a stock (non-rbenv) install Gem.bindir == gem_dir/bin
-# so this collapses to one entry.
-derived_bin = File.expand_path(File.join(__dir__, "..", "..", "..", "..", "bin"))
-candidates = [target_bindir, derived_bin, File.join(Gem.user_dir, "bin")].uniq
+# The launcher MUST sit next to its impl sibling -- it resolves the impl via
+# /proc/self/exe and PATH is bypassed by design (the unspoofable-impl-path
+# contract is part of the confinement model). RubyGems writes the gem's own
+# binstubs (`-server` / `-setup-impl` / `-update-impl`) to `Gem.bindir`, which
+# diverges from `gem_dir/bin` on rbenv, on system Ruby on Debian/Ubuntu (where
+# Gem.bindir = /usr/bin -- not ours to scribble on), and any other RubyGems
+# with a configured EXECUTABLE DIRECTORY.
+#
+# So we don't follow Gem.bindir. We pin everything to the gem's own bindir
+# (`gem_dir/bin`, always under RubyGems' control) and drop COPIES of the impl
+# source files from gems/<name>-<v>/bin/ alongside the compiled launcher --
+# the launcher's neighbor contract is satisfied without reaching into Gem.bindir.
+# The binstubs RubyGems still installs in Gem.bindir become harmless aliases.
+target_bindir = File.expand_path(File.join(__dir__, "..", "..", "..", "..", "bin"))
+# `bin_candidates` is read by the VS Code extension when it goes looking for
+# the launcher. Keep it derived from path math, not ENV -- Gem.user_dir reads
+# GEM_HOME/HOME and would record a different path than the one a clean install
+# actually populated. target_bindir is the one truth here.
+candidates = [target_bindir]
 
 File.write(
   File.join(data_dir, "install.json"),
@@ -161,6 +168,30 @@ else
     SH
     File.chmod(0o755, dst)
   end
+end
+
+# Drop one-line shell wrappers for the impl siblings into target_bindir so the
+# launcher's /proc/self/exe -> "<name>" lookup resolves. A plain `cp` of the
+# Ruby impls would break: they each do `require_relative "../lib/mruby_lsp"`,
+# which is anchored at their on-disk location (gems/<n>-<v>/bin/), not at
+# target_bindir. The wrappers exec the originals at their canonical path, so
+# __FILE__ stays correct and the require_relative chain resolves.
+#
+# Same shape as the non-Linux pass-through wrappers above; gem_root is derived
+# from __dir__ (no ENV), so the absolute path embedded here is stable for the
+# gem's lifetime.
+%w[mruby-lsp-server mruby-lsp-setup-impl mruby-lsp-update-impl].each do |name|
+  src = File.join(gem_root, "bin", name)
+  next unless File.exist?(src)
+  dst = File.join(target_bindir, name)
+  File.write(dst, <<~SH)
+    #!/bin/sh
+    # mruby-lsp #{name} wrapper -- the compiled launcher resolves its impl as a
+    # /proc/self/exe sibling, but the real Ruby script lives in the gem dir and
+    # cannot be relocated (its require_relative chain anchors at its on-disk path).
+    exec "#{src}" "$@"
+  SH
+  File.chmod(0o755, dst)
 end
 
 # No-op Makefile that satisfies RubyGems' contract on any Make implementation

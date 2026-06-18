@@ -877,21 +877,34 @@ answers EVERY accessor every reachable inference branch touches — the overlay
 tests used a real ParseResult as `.ast`, so they never exercised the gap; a
 commented real-world file did.
 
-## Install: `Gem.bindir` ≠ `gem_dir/bin` under rbenv (and any custom prefix)
+## Install: `Gem.bindir` ≠ `gem_dir/bin` (rbenv, system Ruby, custom prefix)
 
-The install hook (`ext/mruby_lsp_install/extconf.rb`) used to compute its
-target bindir relative to its own location:
+The install hook (`ext/mruby_lsp_install/extconf.rb`) computes its target
+bindir relative to its own location:
 `File.expand_path("../../../../bin", __dir__)` → `gem_dir/bin`. On a stock
-RubyGems install that equals `Gem.bindir`, and everything lands in one place.
-Under rbenv (and any `gem env` with `EXECUTABLE DIRECTORY` ≠ `gem_dir/bin`)
-they diverge: RubyGems wrote the `-server` / `-setup-impl` / `-update-impl`
-binstubs to `Gem.bindir` (`<prefix>/bin`), the hook wrote the launcher and
-its three aliases to `gem_dir/bin`. They MUST live together — the launcher
-resolves its impl via `/proc/self/exe` and refuses to fall back to PATH (the
-unspoofable-impl-path contract is part of the confinement design). Result:
-every command died at startup with
-`could not locate '<name>' next to this launcher`. Fix: use `Gem.bindir`
-directly; keep `derived_bin` only as a back-compat candidate in
-`install.json` so the VS Code extension's lookup still finds older installs.
-Lesson: never reconstruct a RubyGems install path by walking `__dir__` —
-ask `Gem` for it. The two only happen to match on the default layout.
+RubyGems install that equals `Gem.bindir`, and everything lands in one
+place. Under rbenv, under Debian/Ubuntu's system Ruby (where Gem.bindir is
+`/usr/bin` — not ours to scribble in), under any `gem env` with a
+configured `EXECUTABLE DIRECTORY`, the two diverge: RubyGems puts the
+`-server` / `-setup-impl` / `-update-impl` binstubs in `Gem.bindir`, the
+install hook drops the launcher and its aliases in `gem_dir/bin`. They MUST
+live together — the launcher resolves its impl via `/proc/self/exe` and
+refuses to fall back to PATH (the unspoofable-impl-path contract is part of
+the confinement design). Result: every command died at startup with
+`could not locate '<name>' next to this launcher`.
+
+Tempting wrong fix: flip the launcher's target to `Gem.bindir`. That puts
+files in `/usr/bin` on system Ruby, which is package-managed and not ours
+to touch. Don't.
+
+Real fix: stay in `gem_dir/bin` (always under RubyGems' control) and put
+thin shell wrappers there for the impls — each wrapper just `exec`s the
+canonical script at `gems/<n>-<v>/bin/<name>`. A `cp` is wrong because the
+impls do `require_relative "../lib/mruby_lsp"`, which is anchored at their
+on-disk location; the wrapper preserves `__FILE__` for the script that
+actually runs. `gem_root` is derived from `__dir__` (no ENV), so the
+absolute path embedded in the wrapper is stable for the gem's lifetime.
+
+Lesson: when the launcher's "neighbor" contract collides with RubyGems'
+bindir policy, build the neighbor yourself; don't move the launcher into a
+shared system bindir to satisfy it.

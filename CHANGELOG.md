@@ -41,10 +41,13 @@ what mruby "usually" has.
 ### Fixed
 - Install: the launcher and its impl sibling now share a bindir on setups
   where `gem env`'s EXECUTABLE DIRECTORY differs from `gem_dir/bin` (rbenv,
-  any custom RubyGems prefix). Previously the install hook wrote launchers
-  to a self-derived `gem_dir/bin` while RubyGems wrote the `-server` /
-  `-setup-impl` / `-update-impl` binstubs to `Gem.bindir`; the launcher
-  resolves its impl via `/proc/self/exe` (PATH is bypassed by design), so
-  every launcher aborted with `could not locate '…' next to this launcher`.
-  Both now go to `Gem.bindir`. Stock installs (where the two paths coincide)
-  are unchanged. See `docs/GOTCHAS.md`.
+  Debian/Ubuntu system Ruby with `/usr/bin`, any custom RubyGems prefix).
+  The install hook used to write launchers to `gem_dir/bin` while RubyGems
+  installed the `-server` / `-setup-impl` / `-update-impl` binstubs to
+  `Gem.bindir`. The launcher resolves its impl via `/proc/self/exe`, PATH
+  is bypassed by design, so every launcher aborted with `could not locate
+  '…' next to this launcher`. Now the install hook drops thin shell
+  wrappers next to the launcher in `gem_dir/bin` that `exec` the canonical
+  impl in `gems/<n>-<v>/bin/`. `gem_dir/bin` is always under RubyGems'
+  control regardless of `EXECUTABLE DIRECTORY`, so nothing lands in
+  `/usr/bin` (or any other system-managed prefix). See `docs/GOTCHAS.md`.
