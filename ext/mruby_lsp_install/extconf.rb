@@ -185,29 +185,13 @@ else
   end
 end
 
-# Drop one-line shell wrappers for the impl siblings into target_bindir so the
-# launcher's /proc/self/exe -> "<name>" lookup resolves. A plain `cp` of the
-# Ruby impls would break: they each do `require_relative "../lib/mruby_lsp"`,
-# which is anchored at their on-disk location (gems/<n>-<v>/bin/), not at
-# target_bindir. The wrappers exec the originals at their canonical path, so
-# __FILE__ stays correct and the require_relative chain resolves.
-#
-# Same shape as the non-Linux pass-through wrappers above; gem_root is derived
-# from __dir__ (no ENV), so the absolute path embedded here is stable for the
-# gem's lifetime.
-%w[mruby-lsp-server mruby-lsp-setup-impl mruby-lsp-update-impl].each do |name|
-  src = File.join(gem_root, "bin", name)
-  next unless File.exist?(src)
-  dst = File.join(target_bindir, name)
-  File.write(dst, <<~SH)
-    #!/bin/sh
-    # mruby-lsp #{name} wrapper -- the compiled launcher resolves its impl as a
-    # /proc/self/exe sibling, but the real Ruby script lives in the gem dir and
-    # cannot be relocated (its require_relative chain anchors at its on-disk path).
-    exec "#{src}" "$@"
-  SH
-  File.chmod(0o755, dst)
-end
+# The launcher resolves its impl (`-server` / `-setup-impl` / `-update-impl`) as
+# a /proc/self/exe sibling — and those ARE the binstubs RubyGems itself installs
+# into this same `target_bindir` (= the install's EXECUTABLE DIRECTORY). So we
+# write NOTHING for them: the siblings already exist, correct and RubyGems-tracked.
+# We deliberately do not drop our own wrappers at those names — they would collide
+# with RubyGems' binstubs (`gem install` aborts: "<name> conflicts with …"), and
+# overwriting them would orphan files RubyGems otherwise removes on uninstall.
 
 # No-op Makefile that satisfies RubyGems' contract on any Make implementation
 # (GNU make, BSD make, nmake). Single empty rule declared for all three targets
