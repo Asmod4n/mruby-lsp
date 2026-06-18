@@ -1,0 +1,197 @@
+{
+  "name": "mruby-lsp",
+  "displayName": "mruby Language Server",
+  "description": "Language server for mruby projects — completion, hover, and go-to-definition driven by the live mruby VM.",
+  "version": "0.1.107",
+  "publisher": "Asmod4n",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/include/mruby.h",
+    "onStartupFinished",
+    "onDebugResolve:mruby",
+    "onDebugDynamicConfigurations:mruby"
+  ],
+  "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "mruby-lsp installs its runtime gems and runs your project's mruby build to power the server, so the build/install/server-start only run once you trust the workspace."
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "mrubyLsp.build",
+        "title": "mruby-lsp: Build/Setup Server For This Project"
+      },
+      {
+        "command": "mrubyLsp.rebuild",
+        "title": "mruby-lsp: Rebuild Now"
+      },
+      {
+        "command": "mrubyLsp.restart",
+        "title": "mruby-lsp: Restart Server"
+      },
+      {
+        "command": "mrubyLsp.stop",
+        "title": "mruby-lsp: Stop Server"
+      },
+      {
+        "command": "mrubyLsp.updateMruby",
+        "title": "mruby-lsp: Update mruby (git pull the checkout)"
+      },
+      {
+        "command": "mrubyLsp.updateGems",
+        "title": "mruby-lsp: Update Pulled-in Gems (refresh to latest)"
+      }
+    ],
+    "configuration": {
+      "title": "mruby-lsp",
+      "properties": {
+        "mrubyLsp.rebuildOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Rebuild the mruby VM and re-index when you save a build-relevant file. Per-workspace; runs your project's build, so only enable it for projects you trust."
+        },
+        "mrubyLsp.requestTimeout": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "markdownDescription": "Maximum seconds a single language request (hover, go-to-definition, completion, …) may run before the server abandons it and returns no result. Guards against a reflection or `addr2line` call wedging on pathological input so the editor never waits forever. Set to `0` to disable the cap (requests run unbounded)."
+        },
+        "mrubyLsp.mrdbPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `mrdb` debugger binary used by the mruby debug adapter. `mrdb` is built from your mruby checkout (the `mruby-bin-debugger` gem) — point this at e.g. `<mruby>/build/host/bin/mrdb`. Leave empty to auto-detect from your mruby build, then `PATH`."
+        },
+        "mrubyLsp.debugTrace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Echo the full mrdb command/response dialog to the Debug Console while debugging (for diagnosing breakpoint binding or prompt parsing). Same as a launch config's \"trace\": true, but no launch.json needed — a launch config's own \"trace\" still wins."
+        },
+        "mrubyLsp.debugStopOnEntry": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pause on the program's first executable line when launching the debugger (no launch.json needed). mrdb starts paused there anyway; this surfaces it so you can step/inspect from the start. A launch config's own \"stopOnEntry\" still wins."
+        },
+        "mrubyLsp.rubyPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ruby executable used to set up the bundled language server. Leave empty to auto-detect."
+        },
+        "mrubyLsp.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the mruby language server in the output tab. Off by default; set to 'verbose' to log every request/response/notification with params and timing (also enables the server's per-request lifecycle logging)."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "[ruby]": {
+        "editor.wordBasedSuggestions": "off"
+      }
+    },
+    "breakpoints": [
+      {
+        "language": "ruby"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "mruby",
+        "label": "mruby (mrdb)",
+        "languages": [
+          "ruby"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Absolute path to the .rb (source) or .mrb (bytecode) file mrdb runs. mruby has no fixed entry point — this file IS the entry: it does whatever starts your program (top-level code, a main/__main__ call, or invoking a method defined in another gem). No arguments are passed to mrdb.",
+                "default": "${file}"
+              },
+              "sourceDir": {
+                "type": "string",
+                "description": "For a .mrb program: directory of the .rb sources it references, passed to mrdb as -d so listing and breakpoints can resolve. Defaults to the program's directory."
+              },
+              "mrdb": {
+                "type": "string",
+                "description": "Path to the mrdb binary. Defaults to the mrubyLsp.mrdbPath setting, else `mrdb` on PATH."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory for the debugged program. Defaults to the program's directory.",
+                "default": "${workspaceFolder}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Pause on the program's first line at launch. On by default (mrdb launches paused there anyway; this surfaces it so you can step/inspect from the start). Set false to run straight to your first breakpoint.",
+                "default": true
+              },
+              "trace": {
+                "type": "boolean",
+                "description": "Echo the full mrdb command/response dialog to the Debug Console (for diagnosing breakpoint binding or prompt parsing).",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "mruby",
+            "request": "launch",
+            "name": "mruby: debug current file",
+            "program": "${file}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "mruby: launch a .rb file under mrdb",
+            "description": "Run and debug an mruby script with mrdb",
+            "body": {
+              "type": "mruby",
+              "request": "launch",
+              "name": "mruby: ${1:debug current file}",
+              "program": "^\"\\${file}\""
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "test": "mocha",
+    "test:debug-adapter": "node debug/mrdbDebugSession.test.js",
+    "pretest": "npm run compile"
+  },
+  "dependencies": {
+    "@vscode/debugadapter": "^1.68.0",
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.75.0",
+    "@vscode/debugprotocol": "^1.68.0",
+    "@vscode/vsce": "^3.0.0",
+    "mocha": "^11.7.6",
+    "typescript": "^5.0.0"
+  }
+}

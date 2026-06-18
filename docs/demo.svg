@@ -1,0 +1,176 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" font-family="SF Mono, Menlo, Consolas, monospace">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e1e2e"/>
+      <stop offset="1" stop-color="#181825"/>
+    </linearGradient>
+    <style>
+      .title{font-family:Inter,Segoe UI,sans-serif;font-weight:700;}
+      .lbl{font-family:Inter,Segoe UI,sans-serif;}
+      .code{font-size:15px;}
+      .item{font-size:13px;}
+      .dim{fill:#6c7086;}
+      .kw{fill:#cba6f7;}
+      .str{fill:#a6e3a1;}
+      .meth{fill:#89b4fa;}
+      .own{fill:#a6e3a1;}
+      .inh{fill:#f9e2af;}
+      .win{fill:#a6e3a1;font-family:Inter,sans-serif;font-weight:700;}
+      .miss{fill:#f38ba8;font-family:Inter,sans-serif;}
+      @keyframes scene{
+        0%,22%{opacity:0}
+        3%,22%{opacity:1}
+        25%,100%{opacity:0}
+      }
+      .scene{opacity:0}
+      .s1{animation:scene 16s infinite; animation-delay:0s}
+      .s2{animation:scene 16s infinite; animation-delay:4s}
+      .s3{animation:scene 16s infinite; animation-delay:8s}
+      .s4{animation:scene 16s infinite; animation-delay:12s}
+      @keyframes cursor{0%,49%{opacity:1}50%,100%{opacity:0}}
+      .caret{animation:cursor 1s steps(1) infinite}
+      @keyframes pop{0%{opacity:0;transform:translateY(-6px)}100%{opacity:1;transform:translateY(0)}}
+    </style>
+  </defs>
+
+  <rect width="1200" height="620" fill="url(#bg)"/>
+
+  <!-- header -->
+  <text x="600" y="34" text-anchor="middle" class="title" font-size="20" fill="#cdd6f4">mruby-lsp  vs  ruby-lsp  —  same editor, same file, live</text>
+  <text x="600" y="56" text-anchor="middle" class="lbl" font-size="13" fill="#7f849c">extension auto-detects an mruby workspace and routes to the mruby-aware server · real LSP output</text>
+
+  <!-- two editor panes -->
+  <!-- LEFT: mruby-lsp -->
+  <g>
+    <rect x="24" y="74" width="566" height="520" rx="10" fill="#11111b" stroke="#313244"/>
+    <rect x="24" y="74" width="566" height="30" rx="10" fill="#181825"/>
+    <circle cx="44" cy="89" r="5" fill="#f38ba8"/><circle cx="62" cy="89" r="5" fill="#f9e2af"/><circle cx="80" cy="89" r="5" fill="#a6e3a1"/>
+    <text x="307" y="93" text-anchor="middle" class="lbl" font-size="12" fill="#a6adc8">cbor.rb — mruby-lsp</text>
+    <rect x="24" y="104" width="566" height="22" fill="#1e1e2e"/>
+    <text x="40" y="119" class="lbl" font-size="11" fill="#a6e3a1">● mruby workspace detected → mruby-lsp active</text>
+  </g>
+
+  <!-- RIGHT: ruby-lsp -->
+  <g>
+    <rect x="610" y="74" width="566" height="520" rx="10" fill="#11111b" stroke="#313244"/>
+    <rect x="610" y="74" width="566" height="30" rx="10" fill="#181825"/>
+    <circle cx="630" cy="89" r="5" fill="#f38ba8"/><circle cx="648" cy="89" r="5" fill="#f9e2af"/><circle cx="666" cy="89" r="5" fill="#a6e3a1"/>
+    <text x="893" y="93" text-anchor="middle" class="lbl" font-size="12" fill="#a6adc8">cbor.rb — ruby-lsp (CRuby/RBS)</text>
+    <rect x="610" y="104" width="566" height="22" fill="#1e1e2e"/>
+    <text x="626" y="119" class="lbl" font-size="11" fill="#7f849c">○ plain ruby-lsp — CRuby's world</text>
+  </g>
+
+  <!-- ===================== SCENE 1: method completion [].ma ===================== -->
+  <g class="scene s1">
+    <text x="600" y="150" text-anchor="middle" class="lbl" font-size="13" fill="#f5c2e7">Feature 1 — method completion · sorted by scope distance</text>
+    <!-- left code -->
+    <text x="48" y="186" class="code"><tspan fill="#cdd6f4">[].</tspan><tspan fill="#cdd6f4">ma</tspan><tspan class="caret" fill="#cdd6f4">|</tspan></text>
+    <!-- left popup (ours, ranked) -->
+    <g style="animation:pop .3s ease-out">
+      <rect x="78" y="196" width="300" height="132" rx="6" fill="#1e1e2e" stroke="#45475a"/>
+      <rect x="78" y="196" width="300" height="26" fill="#313244"/>
+      <text x="90" y="213" class="item own">map!</text><text x="170" y="213" class="item dim">(&amp;block)</text><text x="360" y="213" class="item dim" text-anchor="end">00</text>
+      <text x="90" y="239" class="item meth">map</text><text x="170" y="239" class="item dim">(&amp;block)</text><text x="360" y="239" class="item inh" text-anchor="end">01</text>
+      <text x="90" y="265" class="item meth">max</text><text x="170" y="265" class="item dim">(&amp;block)</text><text x="360" y="265" class="item inh" text-anchor="end">01</text>
+      <text x="90" y="291" class="item meth">max_by</text><text x="170" y="291" class="item dim">(&amp;block)</text><text x="360" y="291" class="item inh" text-anchor="end">01</text>
+      <text x="90" y="317" class="item dim">own (00) → inherited (01) → …</text>
+    </g>
+    <text x="90" y="356" class="win" font-size="12">✓ Array#map! (own) ranked first, Enumerable next</text>
+
+    <!-- right code -->
+    <text x="634" y="186" class="code"><tspan fill="#cdd6f4">[].</tspan><tspan fill="#cdd6f4">ma</tspan><tspan class="caret" fill="#cdd6f4">|</tspan></text>
+    <g style="animation:pop .3s ease-out">
+      <rect x="664" y="196" width="300" height="132" rx="6" fill="#1e1e2e" stroke="#45475a"/>
+      <rect x="664" y="196" width="300" height="26" fill="#313244"/>
+      <text x="676" y="213" class="item meth">map</text><text x="800" y="213" class="item dim">(&amp;…)</text>
+      <text x="676" y="239" class="item meth">map!</text><text x="800" y="239" class="item dim">(&amp;…)</text>
+      <text x="676" y="265" class="item meth">max</text><text x="800" y="265" class="item dim">()</text>
+      <text x="676" y="291" class="item meth">max_by</text><text x="800" y="291" class="item dim">()</text>
+      <text x="676" y="317" class="item dim">no scope-distance ordering</text>
+    </g>
+    <text x="676" y="356" class="miss" font-size="12">— flat order · CRuby RBS data</text>
+  </g>
+
+  <!-- ===================== SCENE 2: constant completion Str ===================== -->
+  <g class="scene s2">
+    <text x="600" y="150" text-anchor="middle" class="lbl" font-size="13" fill="#f5c2e7">Feature 2 — constant completion · from the live mruby VM</text>
+    <text x="48" y="186" class="code"><tspan class="kw">Str</tspan><tspan class="caret" fill="#cdd6f4">|</tspan></text>
+    <g style="animation:pop .3s ease-out">
+      <rect x="78" y="196" width="300" height="132" rx="6" fill="#1e1e2e" stroke="#45475a"/>
+      <rect x="78" y="196" width="300" height="26" fill="#313244"/>
+      <text x="90" y="213" class="item kw">String</text>
+      <text x="90" y="239" class="item own">StringUtils</text><text x="360" y="239" class="item dim" text-anchor="end">VM</text>
+      <text x="90" y="265" class="item kw">Struct</text>
+      <text x="90" y="291" class="item dim">only what THIS build compiled</text>
+    </g>
+    <text x="90" y="356" class="win" font-size="12">✓ StringUtils — a real class in this mruby build</text>
+
+    <text x="634" y="186" class="code"><tspan class="kw">Str</tspan><tspan class="caret" fill="#cdd6f4">|</tspan></text>
+    <g style="animation:pop .3s ease-out">
+      <rect x="664" y="196" width="300" height="132" rx="6" fill="#1e1e2e" stroke="#45475a"/>
+      <rect x="664" y="196" width="300" height="26" fill="#313244"/>
+      <text x="676" y="213" class="item kw">StreamUI</text>
+      <text x="676" y="239" class="item kw">String</text>
+      <text x="676" y="265" class="item miss">StringIO</text><text x="950" y="265" class="item dim" text-anchor="end">CRuby</text>
+      <text x="676" y="291" class="item kw">Struct</text>
+    </g>
+    <text x="676" y="356" class="miss" font-size="12">— StringIO: CRuby-only, not in the mruby VM</text>
+  </g>
+
+  <!-- ===================== SCENE 3: hover ===================== -->
+  <g class="scene s3">
+    <text x="600" y="150" text-anchor="middle" class="lbl" font-size="13" fill="#f5c2e7">Feature 3 — hover · same display contract, runtime-true data</text>
+    <text x="48" y="186" class="code"><tspan class="str">"x"</tspan><tspan fill="#cdd6f4">.</tspan><tspan fill="#cdd6f4">upcase</tspan></text>
+    <g style="animation:pop .3s ease-out">
+      <rect x="78" y="196" width="420" height="118" rx="6" fill="#1e1e2e" stroke="#45475a"/>
+      <rect x="90" y="210" width="396" height="40" rx="4" fill="#11111b"/>
+      <text x="100" y="228" class="item meth">upcase</text>
+      <text x="100" y="244" class="item dim">String#upcase</text>
+      <text x="100" y="276" class="item dim">Definitions: </text><text x="200" y="276" class="item meth">String (live VM)</text>
+      <text x="100" y="300" class="item dim">resolved from the compiled runtime</text>
+    </g>
+    <text x="90" y="344" class="win" font-size="12">✓ accurate for THIS build (no phantom methods)</text>
+
+    <text x="634" y="186" class="code"><tspan class="str">"x"</tspan><tspan fill="#cdd6f4">.</tspan><tspan fill="#cdd6f4">upcase</tspan></text>
+    <g style="animation:pop .3s ease-out">
+      <rect x="664" y="196" width="420" height="170" rx="6" fill="#1e1e2e" stroke="#45475a"/>
+      <rect x="676" y="210" width="396" height="52" rx="4" fill="#11111b"/>
+      <text x="686" y="228" class="item meth">upcase(*options) -&gt; string</text>
+      <text x="686" y="252" class="item inh">(+3 overloads)</text>
+      <text x="686" y="288" class="item dim">Returns a string containing the upcased</text>
+      <text x="686" y="306" class="item dim">characters in self. (RBS doc prose)</text>
+      <text x="686" y="338" class="item inh">richer text — but it's CRuby's, not yours</text>
+    </g>
+    <text x="676" y="392" class="lbl" font-size="12" fill="#f9e2af">↺ ruby-lsp has RBS prose; may not match your build</text>
+  </g>
+
+  <!-- ===================== SCENE 4: go to definition ===================== -->
+  <g class="scene s4">
+    <text x="600" y="150" text-anchor="middle" class="lbl" font-size="13" fill="#f5c2e7">Feature 4 — go to definition · owner-anchored to the VM</text>
+    <text x="48" y="186" class="code"><tspan class="str">"x"</tspan><tspan fill="#cdd6f4">.</tspan><tspan fill="#cdd6f4">upcase</tspan><tspan class="dim">  ⌘-click</tspan></text>
+    <g style="animation:pop .3s ease-out">
+      <rect x="78" y="206" width="420" height="96" rx="6" fill="#1e1e2e" stroke="#45475a"/>
+      <text x="98" y="240" class="item own">→ jumps to String#upcase</text>
+      <text x="98" y="266" class="item dim">resolved on the class the method lives on</text>
+      <text x="98" y="290" class="item meth">mruby-core://String</text>
+    </g>
+    <text x="90" y="332" class="win" font-size="12">✓ resolves — anchored to the real owner</text>
+
+    <text x="634" y="186" class="code"><tspan class="str">"x"</tspan><tspan fill="#cdd6f4">.</tspan><tspan fill="#cdd6f4">upcase</tspan><tspan class="dim">  ⌘-click</tspan></text>
+    <g style="animation:pop .3s ease-out">
+      <rect x="664" y="206" width="420" height="96" rx="6" fill="#1e1e2e" stroke="#45475a"/>
+      <text x="684" y="248" class="item miss">no definition found</text>
+      <text x="684" y="274" class="item dim">(C method, no RBS source location here)</text>
+    </g>
+    <text x="676" y="332" class="miss" font-size="12">— empty for this C method in the fixture</text>
+  </g>
+
+  <!-- progress dots -->
+  <g transform="translate(560,600)">
+    <circle cx="0" cy="0" r="4" fill="#cba6f7"/>
+    <circle cx="20" cy="0" r="4" fill="#45475a"/>
+    <circle cx="40" cy="0" r="4" fill="#45475a"/>
+    <circle cx="60" cy="0" r="4" fill="#45475a"/>
+  </g>
+  <text x="600" y="588" text-anchor="middle" class="lbl" font-size="11" fill="#585b70">all output captured live from both servers over the real LSP wire · loops every 16s</text>
+</svg>

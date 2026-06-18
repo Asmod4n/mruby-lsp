@@ -1,0 +1,34 @@
+diff --git a/include/mruby/num_helpers.h b/include/mruby/num_helpers.h
+index e8833b0..51b508e 100644
+--- a/include/mruby/num_helpers.h
++++ b/include/mruby/num_helpers.h
+@@ -42,6 +42,7 @@ MRB_API mrb_value mrb_convert_size_t(mrb_state* mrb, size_t value);
+ MRB_API mrb_value mrb_convert_ssize_t(mrb_state* mrb, ssize_t value);
+ MRB_API mrb_value mrb_convert_mrb_int(mrb_state* mrb, mrb_int value);
+ MRB_API mrb_value mrb_convert_ptrdiff(mrb_state* mrb, ptrdiff_t value);
++MRB_API mrb_value mrb_convert_uintptr_t(mrb_state* mrb, uintptr_t value);
+ 
+ MRB_API mrb_value MRB_ENCODE_FIX_NAT(mrb_state *mrb, mrb_int numeric);
+ MRB_API mrb_value MRB_DECODE_FIX_NAT(mrb_state *mrb, mrb_value bin);
+diff --git a/mrbgem.rake b/mrbgem.rake
+index 0f00ffe..74e4bcd 100644
+--- a/mrbgem.rake
++++ b/mrbgem.rake
+@@ -12,4 +12,5 @@ MRuby::Gem::Specification.new('mruby-c-ext-helpers') do |spec|
+   else
+     spec.cxx.flags << '-std=c++17'
+   end
++  spec.export_include_paths << File.join(spec.dir, 'include')  # expose num_helpers.h etc. to external consumers
+ end
+diff --git a/src/num_helpers.cpp b/src/num_helpers.cpp
+index 6f8cd4d..7813d47 100644
+--- a/src/num_helpers.cpp
++++ b/src/num_helpers.cpp
+@@ -112,6 +112,7 @@ MRB_DEFINE_CONVERTER(size_t, size_t)
+ MRB_DEFINE_CONVERTER(ssize_t, ssize_t)
+ MRB_DEFINE_CONVERTER(mrb_int, mrb_int)
+ MRB_DEFINE_CONVERTER(ptrdiff_t, ptrdiff)
++MRB_DEFINE_CONVERTER(uintptr_t, uintptr_t)
+ 
+ MRB_API mrb_value mrb_convert_float(mrb_state* mrb, float value) { \
+   return mrb_convert_number(mrb, value); \

@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# The editor may launch this server via `bundle exec` inside the USER's project,
+# which makes the user's Gemfile the active bundle. OUR runtime deps (prism,
+# rdoc) are not in their Gemfile — and the user must not be required to declare
+# our dependencies. Under Ruby 3.4 + Bundler this is fatal: rdoc is no longer an
+# always-available default gem, so `require "rdoc"` raises LoadError.
+#
+# Fix: if we were launched inside a bundle, re-exec ourselves ONCE with the
+# bundler environment stripped (Bundler.with_unbundled_env). The fresh process
+# starts with no active bundle and full access to all installed gems, so our own
+# deps resolve from RubyGems regardless of the workspace's Gemfile.
+if ENV["BUNDLE_GEMFILE"] && !ENV["MRUBY_LSP_UNBUNDLED"]
+  begin
+    require "bundler"
+    Bundler.with_unbundled_env do
+      ENV["MRUBY_LSP_UNBUNDLED"] = "1"
+      exec(RbConfig.ruby, __FILE__, *ARGV)
+    end
+  rescue LoadError
+    # No bundler at all — nothing to escape; fall through.
+  end
+end
+
+# Make our own deps available from RubyGems (now outside any bundle). prism is
+# required for core features; rdoc is optional (C doc comments degrade to off).
+%w[prism rdoc].each do |dep|
+  begin
+    gem dep
+  rescue Gem::LoadError
+    nil
+  end
+end
+
+require_relative "../lib/mruby_lsp"
+
+MrubyLsp.start

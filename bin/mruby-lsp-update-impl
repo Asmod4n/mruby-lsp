@@ -1,0 +1,108 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# mruby-lsp-update <mruby|gems|rebuild> <project-path>
+#
+# Three distinct, explicit update actions (each then re-runs setup to realize it):
+#
+#   mruby   — git pull (fast-forward) the user's mruby/ checkout. Touches only the
+#             checkout the user owns; nothing else.
+#   gems    — refresh the pulled-in gems: delete the build lock (and the gem clone
+#             dir) so the next build re-resolves each git gem to its branch HEAD
+#             and writes a fresh lock. mruby never pulls an existing gem clone, so
+#             refreshing the lock IS the update mechanism.
+#   rebuild — force a full clean rebuild: clear the cached build (every compiled
+#             .o, libmruby) AND the reflect_so, then re-run setup. mruby's build
+#             is incremental and keyed on source mtimes, so editing VENDORED C
+#             (e.g. value_bridge) or reinstalling a same-version gem does NOT
+#             trigger a recompile — the stale objects silently persist and the
+#             reflect_so ends up ABI-mismatched against libmruby (reflection then
+#             returns near-empty / wrong results). This is the hammer for that:
+#             throw away the build artifacts and rebuild from clean source. The
+#             user's mruby checkout and the build lock/config are untouched.
+
+require "fileutils"
+
+GEM_ROOT = File.expand_path(File.join(__dir__, ".."))
+$LOAD_PATH.unshift(File.join(GEM_ROOT, "lib"))
+require "mruby_lsp/build_discovery"
+
+def fail!(msg)
+  warn "mruby-lsp-update: #{msg}"
+  exit 1
+end
+
+def run_setup(project)
+  # The Ruby setup entry is `mruby-lsp-setup-impl` (the `mruby-lsp-setup` name
+  # is the sandbox launcher). Run the impl directly via ruby.
+  setup = File.join(GEM_ROOT, "bin", "mruby-lsp-setup-impl")
+  system(RbConfig.ruby, setup, project) or fail!("rebuild after update failed")
+end
+
+action  = ARGV[0]
+project = ARGV[1]
+fail!("usage: mruby-lsp-update <mruby|gems|rebuild> <project-path>") unless action && project
+project = File.expand_path(project)
+fail!("no such directory: #{project}") unless Dir.exist?(project)
+
+case action
+when "mruby"
+  root = MrubyLsp::Discovery::BuildDiscovery.resolve_mruby_root(project)
+  fail!("no mruby checkout found under #{project}") unless root
+  fail!("#{root} is not a git checkout") unless Dir.exist?(File.join(root, ".git"))
+
+  puts "==> updating mruby: git pull in #{root}"
+  Dir.chdir(root) do
+    system("git", "pull", "--ff-only") or
+      fail!("git pull failed (resolve manually in #{root}, then re-run)")
+  end
+  run_setup(project)
+  puts "mruby updated and rebuilt."
+
+when "gems"
+  # Refresh github: floor gems to their branch HEAD. The wrapper build disables
+  # its lockfile (share/wrapper_build_config.rb: conf.disable_lock), so there is
+  # no pin to clear -- the only sticky state is the cloned repo cache. Clearing
+  # the fetch dir makes the next setup re-clone the branch HEAD. (We do NOT touch
+  # the user's project build_config.rb.lock -- build_discovery reads it to learn
+  # the mruby version; deleting it would break discovery.) Air-gap layout: gem
+  # clones live in the DISJOINT fetch/ dir now, not under build/.
+  repos = File.join(MrubyLsp::Discovery::BuildDiscovery.fetch_dir(project), "repos")
+
+  puts "==> refreshing gems"
+  if repos && Dir.exist?(repos)
+    FileUtils.rm_rf(repos)
+    puts "    cleared gem clones: #{repos}"
+  end
+
+  run_setup(project)
+  puts "gems refreshed to latest and rebuilt."
+
+when "rebuild"
+  # Throw away every compiled artifact so the next setup recompiles from clean
+  # source. Clears the build dir (libmruby + all .o, incl. vendored value_bridge
+  # C) and the reflect_so. The user's mruby checkout and the build lock/config
+  # (which live in the project, not the cache) are left intact, so setup still
+  # discovers the same config — it just rebuilds it from scratch.
+  cache = MrubyLsp::Discovery::BuildDiscovery.cache_dir(project)
+  fail!("no cache for #{project} (run setup first)") unless cache && Dir.exist?(cache)
+
+  build_dir  = File.join(cache, "build")
+  reflect_so = File.join(cache, "mruby_reflect")
+
+  puts "==> clean rebuild for #{project}"
+  if Dir.exist?(build_dir)
+    FileUtils.rm_rf(build_dir)
+    puts "    cleared build: #{build_dir}"
+  end
+  if Dir.exist?(reflect_so)
+    FileUtils.rm_rf(reflect_so)
+    puts "    cleared reflect_so: #{reflect_so}"
+  end
+
+  run_setup(project)
+  puts "rebuilt from clean."
+
+else
+  fail!("unknown action '#{action}' (expected: mruby, gems, or rebuild)")
+end

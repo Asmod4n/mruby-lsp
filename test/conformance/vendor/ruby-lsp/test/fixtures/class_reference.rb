@@ -1,0 +1,1 @@
+example = RubyLsp::ExampleClass.new

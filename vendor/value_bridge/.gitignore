@@ -1,0 +1,14 @@
+# build artifacts
+*.o
+*.so
+*.bundle
+*.class
+*.jar
+Makefile
+mkmf.log
+/build/
+/pkg/
+/tmp/
+# editor
+.vscode/
+*.swp

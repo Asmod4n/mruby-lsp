@@ -1,0 +1,10 @@
+{
+  "value_bridge": "0.1.107",
+  "mruby-lsp": "0.1.107",
+  "prism": "1.9.0",
+  "language_server-protocol": "3.17.0.5",
+  "rbs": "4.0.3",
+  "logger": "1.7.0",
+  "tsort": "0.2.0",
+  "native": "5d426c8a8a7107f5422d01958679e72d7b0e933b17521580313f9b24ed63feb5"
+}

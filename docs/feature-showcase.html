@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mruby-lsp — feature showcase</title>
+<style>
+  :root{
+    --bg:#1e1e1e; --bg2:#252526; --bg3:#2d2d30; --fg:#d4d4d4; --line:#3c3c3c;
+    --blue:#569cd6; --teal:#4ec9b0; --green:#6a9955; --orange:#ce9178;
+    --yellow:#dcdcaa; --purple:#c586c0; --param:#9cdcfe; --num:#b5cea8;
+    --accent:#0e639c; --accent2:#1177bb; --err:#f14c4c; --warn:#cca700;
+    --sel:#264f78; --gutter:#858585;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:#141414;color:var(--fg);
+    font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace;
+    display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;
+  }
+  .frame{width:min(900px,96vw)}
+  .titlebar{
+    display:flex;align-items:center;gap:8px;background:var(--bg3);
+    border-radius:8px 8px 0 0;padding:8px 12px;border:1px solid var(--line);border-bottom:none;
+  }
+  .dot{width:12px;height:12px;border-radius:50%}
+  .r{background:#ff5f56}.y{background:#ffbd2e}.g{background:#27c93f}
+  .filename{margin-left:8px;color:#9d9d9d;font-size:13px}
+  .feature-name{margin-left:auto;color:var(--teal);font-size:12px;letter-spacing:.5px}
+  .editor{
+    position:relative;background:var(--bg);border:1px solid var(--line);
+    border-radius:0 0 8px 8px;min-height:420px;overflow:hidden;
+  }
+  .code{padding:14px 0;font-size:14px;line-height:22px}
+  .row{display:flex;padding:0 0}
+  .gutter{width:46px;text-align:right;padding-right:14px;color:var(--gutter);user-select:none;flex:none}
+  .ln{white-space:pre;flex:1}
+  .kw{color:var(--blue)} .cls{color:var(--teal)} .mth{color:var(--yellow)}
+  .par{color:var(--param)} .num{color:var(--num)} .str{color:var(--orange)}
+  .cmt{color:var(--green)} .pur{color:var(--purple)}
+  /* overlays */
+  .pop{
+    position:absolute;background:var(--bg2);border:1px solid var(--line);
+    border-radius:5px;box-shadow:0 6px 24px rgba(0,0,0,.5);font-size:13px;
+    opacity:0;transform:translateY(6px);transition:opacity .25s,transform .25s;z-index:5;
+    max-width:520px;
+  }
+  .pop.show{opacity:1;transform:translateY(0)}
+  .pop .codeblk{padding:8px 12px;border-bottom:1px solid var(--line);color:var(--fg)}
+  .pop .defs{padding:6px 12px;color:#9d9d9d;font-size:12px}
+  .pop .defs a{color:var(--blue);text-decoration:none}
+  .pop .doc{padding:8px 12px;color:#c8c8c8;border-top:1px solid var(--line)}
+  /* completion list */
+  .clist{position:absolute;z-index:6;background:var(--bg2);border:1px solid var(--line);
+    border-radius:4px;min-width:260px;box-shadow:0 6px 24px rgba(0,0,0,.5);
+    opacity:0;transform:translateY(6px);transition:.25s}
+  .clist.show{opacity:1;transform:translateY(0)}
+  .ci{display:flex;align-items:center;gap:8px;padding:4px 10px}
+  .ci.sel{background:var(--sel)}
+  .ci .ic{width:16px;height:16px;border-radius:3px;display:grid;place-items:center;font-size:10px;color:#1e1e1e;font-weight:700}
+  .ic.m{background:var(--purple)} .ic.f{background:var(--yellow)} .ic.c{background:var(--teal)}
+  .ci .lbl{flex:1}.ci .det{color:#8a8a8a;font-size:11px}
+  /* squiggle */
+  .squig{position:absolute;height:3px;
+    background:repeating-linear-gradient(135deg,var(--err) 0,var(--err) 2px,transparent 2px,transparent 4px);
+    opacity:0;transition:.3s}
+  .squig.show{opacity:1}
+  /* highlight box */
+  .hl{position:absolute;background:rgba(173,216,230,.16);border:1px solid rgba(173,216,230,.35);
+    border-radius:2px;opacity:0;transition:.25s}
+  .hl.show{opacity:1}
+  /* selection band */
+  .selband{position:absolute;background:var(--sel);opacity:0;transition:.25s;border-radius:2px}
+  .selband.show{opacity:.55}
+  /* cursor */
+  .caret{position:absolute;width:2px;height:20px;background:#aeafad;animation:blink 1s step-end infinite}
+  @keyframes blink{50%{opacity:0}}
+  /* lightbulb */
+  .bulb{position:absolute;z-index:7;opacity:0;transition:.25s;font-size:16px;cursor:default}
+  .bulb.show{opacity:1}
+  .menu{position:absolute;z-index:7;background:var(--bg2);border:1px solid var(--line);
+    border-radius:4px;font-size:12px;box-shadow:0 6px 24px rgba(0,0,0,.5);opacity:0;transition:.25s}
+  .menu.show{opacity:1}
+  .mi{padding:5px 12px;color:#cfcfcf;display:flex;gap:8px}.mi:hover{background:var(--sel)}
+  /* tree (type hierarchy / symbols) */
+  .tree{position:absolute;z-index:6;background:var(--bg2);border:1px solid var(--line);border-radius:5px;
+    font-size:12px;padding:6px 0;min-width:220px;box-shadow:0 6px 24px rgba(0,0,0,.5);opacity:0;transition:.25s}
+  .tree.show{opacity:1}
+  .ti{padding:3px 12px;display:flex;gap:7px;align-items:center}
+  .ti .k{width:15px;height:15px;border-radius:3px;display:grid;place-items:center;font-size:9px;color:#1e1e1e;font-weight:700;background:var(--teal)}
+  .ti.indent{padding-left:28px}.ti.indent2{padding-left:44px}
+  .tree .hdr{padding:4px 12px;color:#8a8a8a;font-size:10px;letter-spacing:.6px;text-transform:uppercase}
+  /* inlay */
+  .inlay{background:#333a40;color:#9aa0a6;border-radius:4px;padding:0 5px;font-size:11px;margin:0 3px}
+  /* progress dots */
+  .nav{display:flex;gap:6px;justify-content:center;margin-top:14px;flex-wrap:wrap}
+  .nav b{width:7px;height:7px;border-radius:50%;background:#3c3c3c;transition:.3s;cursor:pointer}
+  .nav b.on{background:var(--teal);transform:scale(1.35)}
+  .caption{text-align:center;color:#8a8a8a;font-size:12px;margin-top:10px;min-height:18px}
+  .lens{position:absolute;color:#6a9bcc;font-size:11px;opacity:0;transition:.25s}
+  .lens.show{opacity:.8}
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="titlebar">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="filename">cbor.rb — mruby-cbor</span>
+    <span class="feature-name" id="fname">hover</span>
+  </div>
+  <div class="editor" id="editor">
+    <div class="code" id="code"></div>
+    <!-- dynamic overlays injected here -->
+  </div>
+  <div class="nav" id="nav"></div>
+  <div class="caption" id="caption"></div>
+</div>
+
+<script>
+// The sample buffer shown in the editor. Tokens carry classes for coloring.
+const LINES = [
+  [['kw','class '],['cls','CBOR']],
+  [['ln','  # Encode a Ruby object to CBOR bytes.']],
+  [['kw','  def '],['mth','encode'],['ln','('],['par','obj'],['ln',', '],['par','pretty'],['ln',' = '],['kw','nil'],['ln',')']],
+  [['par','    buf'],['ln',' = '],['str','""']],
+  [['par','    buf'],['ln','.'],['mth','concat'],['ln','('],['mth','pack'],['ln','('],['par','obj'],['ln','))']],
+  [['ln','  '],['kw','end']],
+  [['kw','end']],
+  [['ln','']],
+  [['cls','CBOR'],['ln','.'],['mth','new'],['ln','.'],['mth','encode'],['ln','('],['num','42'],['ln',')']],
+];
+// comment + string recolor for line 2/3
+function renderCode(){
+  const c=document.getElementById('code');
+  c.innerHTML='';
+  LINES.forEach((toks,i)=>{
+    const row=document.createElement('div');row.className='row';row.dataset.line=i;
+    const g=document.createElement('div');g.className='gutter';g.textContent=(i+1);
+    const ln=document.createElement('div');ln.className='ln';
+    toks.forEach(([cls,txt])=>{
+      const s=document.createElement('span');
+      s.className = cls==='ln'?'':cls;
+      if(cls==='ln' && txt.trim().startsWith('#')) s.className='cmt';
+      s.textContent=txt; ln.appendChild(s);
+    });
+    row.appendChild(g);row.appendChild(ln);c.appendChild(row);
+  });
+}
+renderCode();
+
+const ED=document.getElementById('editor');
+// geometry helpers: char width & line height to place overlays on the grid
+const CH=8.4, LH=22, PADTOP=14, GUT=46+14, LEFT=14;
+function xy(line,col){ return { x: GUT + col*CH, y: PADTOP + line*LH }; }
+
+function clearOverlays(){
+  [...ED.querySelectorAll('.pop,.clist,.squig,.hl,.selband,.caret,.bulb,.menu,.tree,.lens,.inlay-host')]
+    .forEach(e=>e.remove());
+  // reset semantic recolor
+  renderCode();
+}
+
+function el(cls,html,style){
+  const d=document.createElement('div');d.className=cls;if(html!=null)d.innerHTML=html;
+  if(style)Object.assign(d.style,style);ED.appendChild(d);return d;
+}
+function show(d){requestAnimationFrame(()=>d.classList.add('show'));}
+
+// ---- feature scenes ----
+const scenes = [
+  {name:'hover', cap:'textDocument/hover — VM-reflected signature + source link',
+   run(){
+     const p=xy(4,11); // on .concat
+     const pop=el('pop',
+       `<div class="codeblk"><span class="mth">concat</span>(<span class="par">str</span>)</div>
+        <div class="defs"><b>Definitions</b>: <a>string.c</a></div>
+        <div class="doc">Appends the given string to <i>self</i> and returns <i>self</i>.</div>`,
+       {left:(p.x)+'px', top:(p.y+LH)+'px'});
+     el('caret',null,{left:p.x+'px',top:p.y+'px'});
+     show(pop);
+   }},
+  {name:'completion', cap:'textDocument/completion — ranked by live-VM scope distance',
+   run(){
+     const p=xy(4,17); // after pack(
+     const list=el('clist',
+       `${ci('m','pack','Array')}${ci('m','pack_into','Array',true)}${ci('m','packed?','Array')}${ci('f','p','Kernel')}`,
+       {left:p.x+'px',top:(p.y+LH)+'px'});
+     el('caret',null,{left:p.x+'px',top:p.y+'px'});
+     show(list);
+   }},
+  {name:'definition', cap:'textDocument/definition — LocationLink to real source',
+   run(){
+     const p=xy(8,9); // on .encode call
+     const sel=el('selband',null,{left:p.x+'px',top:p.y+'px',width:(6*CH)+'px',height:LH+'px'});
+     show(sel);
+     const pop=el('pop',
+       `<div class="defs">→ jump to <a>cbor.rb:3</a> &nbsp; <span style="color:#6a9955">def encode(obj, pretty = &lt;default&gt;)</span></div>`,
+       {left:p.x+'px',top:(p.y-LH-6)+'px'});
+     show(pop);
+   }},
+  {name:'documentSymbol', cap:'textDocument/documentSymbol — outline tree',
+   run(){
+     const t=el('tree',
+       `<div class="hdr">Outline</div>
+        ${ti('C','CBOR')}${ti('M','encode',1)}`,
+       {right:'14px',top:'14px'});
+     show(t);
+   }},
+  {name:'foldingRange', cap:'textDocument/foldingRange — collapsible regions',
+   run(){
+     // show fold markers on class (0) and def (2)
+     [0,2].forEach(l=>{
+       const p=xy(l,0);
+       el('lens','▾',{left:(p.x-22)+'px',top:p.y+'px',color:'#858585'}).classList.add('show');
+     });
+     const p=xy(2,0);
+     const hl=el('hl',null,{left:(GUT-4)+'px',top:p.y+'px',width:'420px',height:(LH*4)+'px'});
+     show(hl);
+   }},
+  {name:'documentHighlight', cap:'textDocument/documentHighlight — all refs of obj',
+   run(){
+     // 'obj' appears at line2 col? (param) and line4 inside pack(obj)
+     const a=xy(2,15), b=xy(4,18);
+     show(el('hl',null,{left:a.x+'px',top:a.y+'px',width:(3*CH)+'px',height:LH+'px'}));
+     show(el('hl',null,{left:b.x+'px',top:b.y+'px',width:(3*CH)+'px',height:LH+'px'}));
+   }},
+  {name:'selectionRange', cap:'textDocument/selectionRange — smart expand',
+   run(){
+     const steps=[
+       {l:4,c:18,w:3},{l:4,c:13,w:9},{l:4,c:4,w:18},{l:2,c:2,w:0}
+     ];
+     let i=0;
+     const band=el('selband',null,{});show(band);
+     const tick=()=>{
+       const s=steps[i%steps.length];
+       const p=xy(s.l,s.c);
+       const w=s.w?s.w:30;
+       Object.assign(band.style,{left:p.x+'px',top:p.y+'px',width:(w*CH)+'px',height:LH+'px'});
+       i++;
+     };
+     tick();this._iv=setInterval(tick,1400);
+   }, stop(){clearInterval(this._iv);}},
+  {name:'workspaceSymbol', cap:'workspace/symbol — fuzzy search across the VM index',
+   run(){
+     const t=el('tree',
+       `<div class="hdr">⌕ "enc" — workspace symbols</div>
+        ${ti('M','encode','  CBOR')}${ti('M','encode_to','  CBOR')}${ti('M','encoding','  String')}`,
+       {left:'120px',top:'10px'});
+     show(t);
+   }},
+  {name:'references', cap:'textDocument/references — declaration + call sites',
+   run(){
+     const t=el('tree',
+       `<div class="hdr">References to encode (3)</div>
+        ${ti('•','cbor.rb:3  def encode')}${ti('•','cbor.rb:9  CBOR.new.encode')}${ti('•','test.rb:12 c.encode')}`,
+       {right:'14px',top:'14px'});
+     show(t);
+     const p=xy(2,6);show(el('hl',null,{left:p.x+'px',top:p.y+'px',width:(6*CH)+'px',height:LH+'px'}));
+   }},
+  {name:'rename', cap:'textDocument/rename — WorkspaceEdit (constants)',
+   run(){
+     const p=xy(0,6);
+     const sel=el('selband',null,{left:p.x+'px',top:p.y+'px',width:(4*CH)+'px',height:LH+'px'});show(sel);
+     const box=el('clist',`<div class="ci"><input style="background:#3c3c3c;border:1px solid #569cd6;color:#fff;font:inherit;padding:2px 6px;border-radius:3px" value="Cbor"></div>`,
+        {left:p.x+'px',top:(p.y-LH-8)+'px'});show(box);
+   }},
+  {name:'signatureHelp', cap:'textDocument/signatureHelp — active parameter',
+   run(){
+     const p=xy(8,16); // inside encode(42
+     const pop=el('pop',
+       `<div class="codeblk"><span class="mth">encode</span>(<b style="color:#fff;border-bottom:2px solid #569cd6">obj</b>, <span class="par">pretty</span>)</div>
+        <div class="doc">parameter 1 of 2 — <span class="par">obj</span></div>`,
+       {left:p.x+'px',top:(p.y-LH-50)+'px'});
+     el('caret',null,{left:p.x+'px',top:p.y+'px'});show(pop);
+   }},
+  {name:'documentLink', cap:'textDocument/documentLink — source:// gem links',
+   run(){
+     const t=el('tree',`<div class="hdr">document links</div>${ti('↗','none in this buffer  ( [] — matches ruby-lsp )')}`,
+       {left:'120px',top:'16px'});show(t);
+   }},
+  {name:'codeLens', cap:'textDocument/codeLens — test runner lenses',
+   run(){
+     const p=xy(0,0);
+     const l=el('lens','▷ Run | Debug   (shown on test classes when a test bundle is present)',
+       {left:GUT+'px',top:(p.y-16)+'px'});l.classList.add('show');
+   }},
+  {name:'codeAction', cap:'textDocument/codeAction — refactors on selection',
+   run(){
+     const p=xy(4,4);
+     const sel=el('selband',null,{left:p.x+'px',top:p.y+'px',width:(18*CH)+'px',height:LH+'px'});show(sel);
+     const b=el('bulb','💡',{left:(p.x-26)+'px',top:p.y+'px'});b.classList.add('show');
+     const m=el('menu',
+       `<div class="mi">Refactor: Extract Variable</div>
+        <div class="mi">Refactor: Extract Method</div>`,
+       {left:p.x+'px',top:(p.y+LH+2)+'px'});show(m);
+   }},
+  {name:'inlayHint', cap:'textDocument/inlayHint — implicit rescue / hash (opt-in)',
+   run(){
+     // show an implicit-rescue style hint near 'nil' default
+     const p=xy(2,30);
+     const host=el('inlay-host',`<span class="inlay">StandardError</span>`,
+       {position:'absolute',left:p.x+'px',top:p.y+'px'});
+     host.classList.add('show');host.style.opacity=1;
+   }},
+  {name:'semanticTokens', cap:'textDocument/semanticTokens — byte-identical to ruby-lsp',
+   run(){
+     // pulse the class name + parameter coloring to emphasize semantic layer
+     const c=document.getElementById('code');
+     const cls=c.querySelector('.cls');const par=c.querySelectorAll('.par');
+     if(cls){cls.style.transition='text-shadow .6s';cls.style.textShadow='0 0 10px #4ec9b0';}
+     par.forEach(p=>{p.style.transition='text-shadow .6s';p.style.textShadow='0 0 10px #9cdcfe';});
+     const t=el('tree',`<div class="hdr">tokens</div>${ti('■','CBOR → class · declaration')}${ti('■','obj → parameter')}`,
+       {right:'14px',top:'14px'});show(t);
+   }},
+  {name:'typeHierarchy', cap:'typeHierarchy — supertypes / subtypes from VM ancestry',
+   run(){
+     const t=el('tree',
+       `<div class="hdr">Type Hierarchy — CBOR</div>
+        ${ti('C','Object')}${ti('C','CBOR',1)}${ti('C','CBOR::Streaming',2)}`,
+       {right:'14px',top:'14px'});show(t);
+   }},
+  {name:'diagnostic', cap:'textDocument/diagnostic — Prism errors & warnings',
+   run(){
+     const p=xy(4,4);
+     const sq=el('squig',null,{left:p.x+'px',top:(p.y+LH-3)+'px',width:(18*CH)+'px'});show(sq);
+     const pop=el('pop',
+       `<div class="doc"><span style="color:#f14c4c">●</span> possibly useless use of a literal in void context <span style="color:#8a8a8a">— Prism</span></div>`,
+       {left:p.x+'px',top:(p.y+LH+4)+'px'});show(pop);
+   }},
+  {name:'formatting', cap:'rangeFormatting / onTypeFormatting — delegated to formatter',
+   run(){
+     const t=el('tree',`<div class="hdr">formatting</div>${ti('⌯','range → null  ( no bundled formatter — matches ruby-lsp )')}${ti('⌯','onType triggers: {  \\n  |  d')}`,
+       {left:'90px',top:'16px'});show(t);
+   }},
+  {name:'positionEncoding', cap:'initialize — negotiates utf-8 / utf-16 like ruby-lsp',
+   run(){
+     const t=el('tree',
+       `<div class="hdr">initialize → positionEncoding</div>
+        ${ti('✓','client offers [utf-8, utf-16]')}${ti('→','negotiated: utf-8')}${ti('→','fallback: utf-16')}`,
+       {left:'120px',top:'30px'});show(t);
+   }},
+];
+
+function ci(icon,label,detail,sel){
+  return `<div class="ci ${sel?'sel':''}"><span class="ic ${icon}">${icon.toUpperCase()}</span><span class="lbl">${label}</span><span class="det">${detail||''}</span></div>`;
+}
+function ti(k,label,indent){
+  const cl = indent===1?'indent':indent===2?'indent2':'';
+  const kk = k.length===1 ? `<span class="k">${k}</span>` : `<span style="width:15px">${k}</span>`;
+  return `<div class="ti ${cl}">${kk}<span>${label}</span></div>`;
+}
+
+// ---- driver ----
+let idx=0, current=null, timer=null;
+const nav=document.getElementById('nav');
+scenes.forEach((s,i)=>{const b=document.createElement('b');b.onclick=()=>go(i);nav.appendChild(b);});
+function go(i){
+  if(current&&current.stop)current.stop();
+  clearTimeout(timer);
+  clearOverlays();
+  idx=(i+scenes.length)%scenes.length;
+  current=scenes[idx];
+  document.getElementById('fname').textContent=current.name;
+  document.getElementById('caption').textContent=current.cap;
+  [...nav.children].forEach((b,k)=>b.classList.toggle('on',k===idx));
+  // slight delay so cleared overlays don't flash
+  setTimeout(()=>current.run.call(current),120);
+  timer=setTimeout(()=>go(idx+1),10000); // ~10s each
+}
+go(0);
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight')go(idx+1);
+  if(e.key==='ArrowLeft')go(idx-1);
+});
+</script>
+</body>
+</html>
