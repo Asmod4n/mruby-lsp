@@ -380,13 +380,14 @@ async function startClient(): Promise<void> {
   // the user has nothing installed globally. Set it for both run and debug.
   const serverEnv: NodeJS.ProcessEnv = bundlePath ? bundleEnv(bundlePath) : { ...process.env };
 
-  // Launch the server with the workspace dir as its argument — the server
-  // derives its own cache (~/.cache) from this path. Editor-agnostic: any LSP
-  // client that can set argv works; clients that can't still work because the
-  // server falls back to the initialize rootUri, then cwd.
+  // No argv to the server: the workspace comes from the LSP `initialize`
+  // (workspaceFolders/rootUri) — the only source the spec defines, and the same
+  // one every other client (Helix, Neovim, …) uses — and the launcher's stage-1
+  // wall is workspace-independent. We still set cwd to the project (conventional;
+  // the server also falls back to cwd if a client sent no rootUri).
   const serverOptions: ServerOptions = {
-    run: { command, args: [root], options: { cwd: root, env: serverEnv } },
-    debug: { command, args: [root], options: { cwd: root, env: serverEnv } },
+    run: { command, options: { cwd: root, env: serverEnv } },
+    debug: { command, options: { cwd: root, env: serverEnv } },
   };
   // Read user settings to forward to the server at initialize. requestTimeout
   // is per-workspace so a project with a big binary (slow first addr2line) can

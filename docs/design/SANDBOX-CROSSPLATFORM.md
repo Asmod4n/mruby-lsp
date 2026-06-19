@@ -125,23 +125,49 @@ Pending: the FS wall extended to the setup/update launcher roles (today
 
 Floor = seccomp-bpf; second wall = Landlock; both born-confined.
 
+### Two-stage Landlock (the workspace is only knowable from `initialize`)
+
+The FS wall is split across the launcher and the server, because the workspace
+root is NOT known when the launcher runs. The only spec-portable source of the
+workspace is the LSP `initialize` request (`workspaceFolders`/`rootUri`) — argv
+and cwd are out of the LSP spec and editor-specific (Helix passes no argv at all)
+— and `initialize` arrives only AFTER the server is up. Landlock layers can only
+ever TIGHTEN (they AND-combine), so a read rule set chosen by the launcher could
+never be widened to include the workspace later. Therefore:
+
+- **Stage 1 — launcher, before Ruby** (`ext/mruby_lsp_launcher/launcher.c`):
+  confine WRITES + EXEC only. Reads stay OPEN. Writes are allowed only on the
+  build cache / state dir / tmp / safe `/dev` nodes; exec only on the toolchain,
+  Ruby, version-manager dirs, and the gem root. Then the seccomp MARKER, then
+  `execve` Ruby on the CLI dispatcher. The pre-stage-2 window runs only trusted
+  code (our gem + prism/rdoc); `reflect.so` is loaded only after stage 2 is up.
+- **Stage 2 — server, after `initialize`** (`ext/mruby_lsp_landlock`, a tiny
+  CRuby ext exposing `MrubyLsp::Landlock.restrict_reads`): once `@workspace` is
+  resolved from `initialize`, stack a layer handling `READ_FILE|READ_DIR` that
+  grants reads only beneath the project (`@workspace` + mruby_root + build cache),
+  our state dirs, the Ruby prefix, and every `Gem.path` — plus the system/Ruby
+  base baked into the ext. Every read outside that union is then denied, for this
+  process and the rebuild child it spawns. If the kernel headers don't name
+  Landlock the ext compiles to a stub that defines nothing, so the server learns
+  "no stage-2 wall here" from `defined?(MrubyLsp::Landlock)` and degrades.
+
 ### Prelude sequence (the re-exec front)
-1. Resolve all need-set paths while still unconfined (root, lock, build dir,
-   toolchain, dynamic linker + libs from `ldd`).
-2. fd hygiene: close everything except 0/1/2 and any pipe actually used. seccomp
+1. fd hygiene: close everything except 0/1/2 and any pipe actually used. seccomp
    permits read/write on ANY inherited fd, so leaked fds are a hole — scrub them.
-3. Scrub injection env: unset `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` (or pin
-   to the vetted set), so no shim loads into the post-exec image.
-4. Landlock (if ABI present): create ruleset, grant read+exec on toolchain/libs +
-   dynamic linker, read on @root + lock + build inputs, read+write on tmp/cache;
-   `landlock_restrict_self`. Query ABI with
+2. Scrub injection env: unset `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, so no
+   shim loads into the post-exec image.
+3. `PR_SET_NO_NEW_PRIVS` — precondition for unprivileged seccomp.
+4. Stage-1 Landlock (if ABI present): create a ruleset handling the WRITE/EXEC
+   access bits (NOT reads — see above), grant write on cache/state/tmp + exec on
+   toolchain/Ruby/gem-root; `landlock_restrict_self`. Query ABI with
    `landlock_create_ruleset(NULL,0,LANDLOCK_CREATE_RULESET_VERSION)`; apply only
    the access bits the running ABI defines. Syscalls 444/445/446.
-5. seccomp-bpf: install the filter (allow the enumerated syscall set the VM/GC/
-   allocator/linked gems need; deny `socket`, `connect`, the broad `open` paths
-   you don't need, `kill`/`tkill`/`tgkill` except via the pidfd path below).
-   Filter survives the exec.
-6. `execve` the real server. It starts born-confined.
+5. seccomp-bpf: an allow-all filter as the "confined" MARKER (the server reads
+   `/proc/self/status` `Seccomp:` to learn, env/arg-free, that stage 1 is up).
+   Survives the exec; children inherit it. The real net seal stays in
+   `mruby-lsp-nonet` around the offline build phase.
+6. `execve` Ruby on the CLI dispatcher. It starts born-confined (writes/exec);
+   the server raises the stage-2 read wall right after `initialize`.
 
 ### Graceful degradation (MANDATORY — never fail-closed on startup)
 A sandbox bug that blocks something the server needs is baffling to debug and

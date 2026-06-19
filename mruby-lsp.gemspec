@@ -56,7 +56,17 @@ Gem::Specification.new do |spec|
   # sandbox launcher (Linux, static) + the mruby-lsp-nonet build-phase net seal
   # and drops them in the install's executable dir under all three names. Non-Linux
   # hosts skip the compile and ship a pass-through that execs Ruby on the script.
-  spec.extensions = ["ext/mruby_lsp_install/extconf.rb"]
+  #
+  # The second extension is the stage-2 Landlock READ wall (MrubyLsp::Landlock).
+  # The launcher confines writes/exec BEFORE Ruby; this ext lets the SERVER narrow
+  # READS to the project once it learns the workspace from the LSP `initialize`
+  # (the only spec-portable source). Built like any CRuby ext; if the kernel
+  # headers don't name Landlock, it compiles to a stub that defines nothing, so
+  # the server degrades exactly as on an old kernel / macOS / Windows.
+  spec.extensions = [
+    "ext/mruby_lsp_install/extconf.rb",
+    "ext/mruby_lsp_landlock/extconf.rb",
+  ]
 
   # >= 1.9.0: the features lean on the code-units position API
   # (start_code_units_column / cached_*_code_units_*) for correct UTF-16 columns;

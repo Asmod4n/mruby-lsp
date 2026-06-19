@@ -27,15 +27,18 @@
  *                    loads into the post-exec image.
  *   3. PR_SET_NO_NEW_PRIVS — precondition for unprivileged seccomp; also good
  *                    hygiene under Landlock.
- *   4. Landlock    — install an FS allow-list; on ENOSYS or any unsupported
- *                    ABI bit (or kernel headers too old to even name the
- *                    syscalls at build time), DEGRADE GRACEFULLY (the design
- *                    contract: an LSP that won't start is worse UX than one
- *                    that warns).
- *   5. seccomp     — deliberately NOT installed in this iteration. The allow
- *                    set must be tuned against a real server+reflect.so run;
- *                    a too-tight filter is a cryptic SIGSYS at startup. See
- *                    docs/design/SANDBOX-CROSSPLATFORM.md.
+ *   4. Landlock    — STAGE 1 of two: confine WRITES + EXEC, but NOT reads. The
+ *                    workspace isn't known yet (its only spec-portable source is
+ *                    the LSP `initialize`, which arrives after exec) and Landlock
+ *                    only tightens, so reads must stay open here; the SERVER
+ *                    raises the stage-2 READ wall after initialize (the
+ *                    MrubyLsp::Landlock ext, ext/mruby_lsp_landlock). On ENOSYS /
+ *                    unsupported ABI / build headers too old, DEGRADE GRACEFULLY.
+ *   5. seccomp     — an allow-all filter as a MARKER (not a restriction), set
+ *                    only after stage-1 Landlock succeeds, so /proc/self/status
+ *                    `Seccomp:` is the truthful "confined" signal the server reads
+ *                    (Landlock itself is not introspectable). Children inherit it;
+ *                    the real net seal stays in mruby-lsp-nonet (build phase).
  *   6. execve      — Ruby on this gem's CLI dispatcher (baked lib dir), handing
  *                    it this role's name. No binstub, no PATH search.
  *
@@ -289,7 +292,7 @@ static const char *real_home(void)
     return (pw && pw->pw_dir && pw->pw_dir[0]) ? pw->pw_dir : NULL;
 }
 
-static int apply_landlock(const char *workspace)
+static int apply_landlock(void)
 {
     /* Query ABI; degrade gracefully on ENOSYS (kernel without Landlock) or
      * EOPNOTSUPP (Landlock disabled). */
@@ -302,103 +305,85 @@ static int apply_landlock(const char *workspace)
     }
     vlog("landlock: ABI=%ld", abi);
 
-    /* Build the access mask in chunks: only ABI ≥ N bits get added. */
-    uint64_t fs_all =
-        LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR |
+    /* STAGE 1 (pre-Ruby): confine WRITES + EXEC only — deliberately NOT reads.
+     * The workspace isn't known here: the only spec-portable source is the LSP
+     * `initialize` request, which arrives AFTER we exec Ruby. And Landlock layers
+     * can only tighten, so a read rule set now could never be widened to include
+     * the workspace later. So reads stay OPEN in stage 1; the SERVER stacks the
+     * read wall in stage 2 once it has the rootUri (MrubyLsp::Landlock, built
+     * from ext/mruby_lsp_landlock). The pre-stage-2 window runs only trusted code
+     * (our gem + prism/rdoc); reflect.so is loaded only after stage 2 is up. */
+    uint64_t write_set =
         LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REMOVE_DIR |
         LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_MAKE_CHAR |
         LANDLOCK_ACCESS_FS_MAKE_DIR | LANDLOCK_ACCESS_FS_MAKE_REG |
         LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_MAKE_FIFO |
-        LANDLOCK_ACCESS_FS_MAKE_BLOCK | LANDLOCK_ACCESS_FS_MAKE_SYM |
-        LANDLOCK_ACCESS_FS_EXECUTE;
+        LANDLOCK_ACCESS_FS_MAKE_BLOCK | LANDLOCK_ACCESS_FS_MAKE_SYM;
 #ifdef LANDLOCK_ACCESS_FS_REFER
-    if (abi >= 2) fs_all |= LANDLOCK_ACCESS_FS_REFER;
+    if (abi >= 2) write_set |= LANDLOCK_ACCESS_FS_REFER;
 #endif
 #ifdef LANDLOCK_ACCESS_FS_TRUNCATE
-    if (abi >= 3) fs_all |= LANDLOCK_ACCESS_FS_TRUNCATE;
+    if (abi >= 3) write_set |= LANDLOCK_ACCESS_FS_TRUNCATE;
 #endif
+    uint64_t handled = write_set | LANDLOCK_ACCESS_FS_EXECUTE;
 
-    uint64_t rx = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR |
-                  LANDLOCK_ACCESS_FS_EXECUTE;
-    uint64_t r  = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
-    uint64_t rw = fs_all; /* read+write+exec; we don't try to forbid e.g. exec
-                             inside the workspace because mrbc lives there */
+    uint64_t x  = LANDLOCK_ACCESS_FS_EXECUTE;             /* exec-only dirs        */
+    uint64_t w  = write_set;                              /* write-only sinks      */
+    uint64_t wx = write_set | LANDLOCK_ACCESS_FS_EXECUTE; /* build dirs: mkmf execs
+                                                           * its conftest binaries */
 
-    struct landlock_ruleset_attr ra = { .handled_access_fs = fs_all };
+    struct landlock_ruleset_attr ra = { .handled_access_fs = handled };
     int ruleset_fd = syscall(__NR_landlock_create_ruleset, &ra, sizeof(ra), 0);
     if (ruleset_fd < 0) {
         vlog("landlock: create_ruleset failed: %s — degrading", strerror(errno));
         return -1;
     }
 
-    /* System paths: libraries, locale, /etc bits, /proc, /sys, /dev safe nodes. */
-    add_path_rule(ruleset_fd, "/usr",      rx);
-    add_path_rule(ruleset_fd, "/bin",      rx);
-    add_path_rule(ruleset_fd, "/sbin",     rx);
-    add_path_rule(ruleset_fd, "/lib",      r);
-    add_path_rule(ruleset_fd, "/lib64",    r);
-    add_path_rule(ruleset_fd, "/lib32",    r);
-    add_path_rule(ruleset_fd, "/opt",      rx);
-    add_path_rule(ruleset_fd, "/etc",      r);
-    add_path_rule(ruleset_fd, "/proc",     r);
-    add_path_rule(ruleset_fd, "/sys",      r);
-    /* /dev: read everywhere (urandom/zero/tty/random reads); write only on
-     * the safe sink nodes (null, tty). Granting /dev RW wholesale would also
-     * permit writes to block devices etc. — keep those denied by listing the
-     * writable ones individually. Underlying Unix DAC still applies, so even
-     * /dev/null RW only succeeds because it's world-writable; this rule just
-     * makes Landlock not veto the write that RubyGems' resolver (and many
-     * Ruby libs) does to File::NULL on startup. */
-    add_path_rule(ruleset_fd, "/dev",      r);
-    add_path_rule(ruleset_fd, "/dev/null",
-                  LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE);
-    add_path_rule(ruleset_fd, "/dev/tty",
-                  LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE);
+    /* EXEC: the interpreter we're about to execve, the C toolchain (the server
+     * may spawn the setup build), and version-manager shims. Their READS are
+     * already open in stage 1, so no read grant is needed. */
+    add_path_rule(ruleset_fd, "/usr",  x);
+    add_path_rule(ruleset_fd, "/bin",  x);
+    add_path_rule(ruleset_fd, "/sbin", x);
+    add_path_rule(ruleset_fd, "/opt",  x);
 
-    /* /tmp: Ruby and gems put tempfiles here. RW. */
-    add_path_rule(ruleset_fd, "/tmp",      rw);
-    add_path_rule(ruleset_fd, "/var/tmp",  rw);
-    add_path_rule(ruleset_fd, "/run",      r);
+    /* WRITE sinks. Tempdirs are write+exec (mkmf/gcc compile and RUN conftest
+     * binaries there); the safe /dev nodes are write-only (RubyGems writes
+     * File::NULL on startup); everything else can't be written. */
+    add_path_rule(ruleset_fd, "/tmp",     wx);
+    add_path_rule(ruleset_fd, "/var/tmp", wx);
+    add_path_rule(ruleset_fd, "/dev/null", LANDLOCK_ACCESS_FS_WRITE_FILE);
+    add_path_rule(ruleset_fd, "/dev/tty",  LANDLOCK_ACCESS_FS_WRITE_FILE);
 
-    /* User cache/data: FIXED XDG defaults under the passwd home. We do NOT read
-     * $XDG_CACHE_HOME / $XDG_DATA_HOME / $HOME — those are env and could
-     * relocate a writable root into the sandbox. A user who relocated XDG via
-     * env is deliberately not honored here; the server side matches this so the
-     * build cache lands where the allow-list expects it. */
+    /* OUR cache/state under the passwd home — the only place we ever write. We
+     * do NOT read $XDG_CACHE_HOME / $XDG_DATA_HOME / $HOME (env, attacker-
+     * settable); the server side matches this FIXED layout. The cache holds the
+     * build (compiles + conftest execs) -> write+exec; the data dir holds
+     * install.json + setup state -> write only. */
     const char *home = real_home();
     if (home) {
         char p[4096];
         snprintf(p, sizeof p, "%s/.cache/mruby-lsp", home);
-        add_path_rule(ruleset_fd, p, rw);
+        add_path_rule(ruleset_fd, p, wx);
         snprintf(p, sizeof p, "%s/.local/share/mruby-lsp", home);
-        add_path_rule(ruleset_fd, p, rw);
-        /* Ruby version managers commonly drop shims/binstubs under the home: */
-        snprintf(p, sizeof p, "%s/.rbenv", home); add_path_rule(ruleset_fd, p, rx);
-        snprintf(p, sizeof p, "%s/.rvm",   home); add_path_rule(ruleset_fd, p, rx);
-        snprintf(p, sizeof p, "%s/.asdf",  home); add_path_rule(ruleset_fd, p, rx);
-        snprintf(p, sizeof p, "%s/.gem",   home); add_path_rule(ruleset_fd, p, rx);
+        add_path_rule(ruleset_fd, p, w);
+        /* Version managers drop shims/binstubs under the home — EXEC only: */
+        snprintf(p, sizeof p, "%s/.rbenv", home); add_path_rule(ruleset_fd, p, x);
+        snprintf(p, sizeof p, "%s/.rvm",   home); add_path_rule(ruleset_fd, p, x);
+        snprintf(p, sizeof p, "%s/.asdf",  home); add_path_rule(ruleset_fd, p, x);
+        snprintf(p, sizeof p, "%s/.gem",   home); add_path_rule(ruleset_fd, p, x);
         snprintf(p, sizeof p, "%s/.local/share/gem", home);
-        add_path_rule(ruleset_fd, p, rx);
+        add_path_rule(ruleset_fd, p, x);
     }
 
-    /* The workspace itself: R (the server reads files; setup writes build
-     * artifacts to the cache, not the workspace). */
-    if (workspace && *workspace) {
-        add_path_rule(ruleset_fd, workspace, r);
-    }
-
-    /* The launcher's own gem-install root (RX). The Ruby we execve lives elsewhere
-     * (/usr or a version-manager dir, allowed above), but the CLI dispatcher and
-     * the whole require chain it pulls (the mruby_lsp library, prism, …) live
-     * UNDER this root; without an explicit allow they fail with EACCES once up
-     * (the launcher itself was loaded before it). This single rule covers
-     * <gemhome>/{bin,gems,specifications,extensions}, which is everything the baked
-     * lib/ + Ruby's require chain reach. Works for any gem install layout
-     * (system, user --user-install, --install-dir <bundled>). */
+    /* The launcher's own gem-install root: EXEC (binstubs / native helpers). The
+     * require chain (reads) is open in stage 1; stage 2 re-grants reads on this
+     * root explicitly via Gem.path. Works for any layout (system, --user-install,
+     * --install-dir <bundled>). */
     char gemhome[4096];
     if (self_gemhome(gemhome, sizeof gemhome) == 0) {
-        add_path_rule(ruleset_fd, gemhome, rx);
-        vlog("landlock: gem root RX = %s", gemhome);
+        add_path_rule(ruleset_fd, gemhome, x);
+        vlog("landlock: stage-1 gem root X = %s", gemhome);
     }
 
     if (syscall(__NR_landlock_restrict_self, ruleset_fd, 0)) {
@@ -407,13 +392,12 @@ static int apply_landlock(const char *workspace)
         return -1;
     }
     close(ruleset_fd);
-    vlog("landlock: active");
+    vlog("landlock: stage-1 (write/exec) active");
     return 0;
 }
 #else  /* !MRUBY_LSP_HAVE_LANDLOCK — kernel headers can't name the syscalls */
-static int apply_landlock(const char *workspace)
+static int apply_landlock(void)
 {
-    (void)workspace;
     vlog("landlock: not available at build time — degrading");
     return -1;
 }
@@ -432,12 +416,13 @@ int main(int argc, char **argv)
         return 127;
     }
 
-    /* The workspace, if the editor passed one. The server also accepts rootUri
-     * via the LSP initialize; we just use this for the Landlock allow list.
-     * argv (set by the launching editor) is not env — it does not steer the
-     * security floor, only narrows the readable workspace. */
-    const char *workspace = (argc > 1 && argv[1][0] == '/') ? argv[1] : NULL;
-
+    /* We do NOT take the workspace from argv. The only spec-portable source of
+     * the workspace is the LSP `initialize` request (rootUri / workspaceFolders),
+     * which the SERVER reads after we exec — see ext/mruby_lsp_landlock + the
+     * stage-2 read wall in server.rb. The launcher's stage-1 wall (writes/exec) is
+     * workspace-independent, so it needs nothing from argv. argv is still
+     * forwarded verbatim to the server below (a client MAY pass a root as a hint),
+     * but it never steers the security floor. */
     close_stray_fds();
     scrub_env();
 
@@ -445,11 +430,12 @@ int main(int argc, char **argv)
         vlog("PR_SET_NO_NEW_PRIVS failed: %s", strerror(errno));
 
     if (role->fs_wall) {
-        if (apply_landlock(workspace) == 0) {
-            /* MARKER, last: only now — Landlock up — do we set the seccomp filter,
-             * so an active filter (visible in /proc/self/status) truthfully means
-             * "fully confined". The server reads that to decide, env/arg-free,
-             * whether to run silently or to ask the user (see SandboxStatus). */
+        if (apply_landlock() == 0) {
+            /* MARKER, last: only now — stage-1 Landlock up — do we set the seccomp
+             * filter, so an active filter (visible in /proc/self/status) truthfully
+             * means "stage-1 confined". The server reads that to decide, env/arg-
+             * free, whether to raise the stage-2 read wall and run, or to ask the
+             * user (see SandboxStatus). */
             apply_seccomp_marker();
         } else {
             /* Landlock could NOT be applied (old kernel, disabled, error). We do

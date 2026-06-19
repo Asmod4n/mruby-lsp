@@ -41,15 +41,25 @@ what mruby "usually" has.
 ### Security
 - Reflection only — never executes buffer code (no `eval`/`mrb_load_string`).
   On Linux a small STATIC launcher (no dynamic loader, so no `LD_PRELOAD`/`LD_AUDIT`
-  can inject into it) confines BEFORE Ruby starts — Landlock FS wall + a seccomp
-  filter as the final step — then `execve`s Ruby directly on the entry script.
+  can inject into it) confines BEFORE Ruby starts, then `execve`s Ruby on the CLI
+  dispatcher. The Landlock FS wall is **two-stage**, because the only spec-portable
+  source of the workspace is the LSP `initialize` request — argv and cwd are
+  outside the LSP spec and editor-specific (Helix passes no argv), and Landlock
+  layers only ever tighten:
+  - **Stage 1 (launcher, pre-Ruby):** confine WRITES + EXEC; reads stay open
+    (the workspace isn't known yet). Then the seccomp filter as the final step.
+  - **Stage 2 (server, post-`initialize`):** once the workspace is known from
+    `rootUri`/`workspaceFolders`, a tiny CRuby ext (`MrubyLsp::Landlock`) stacks a
+    READ wall scoped to the project + the dirs Ruby itself needs. If the kernel
+    headers don't name Landlock the ext defines nothing and the server degrades.
   The server learns whether it is confined with NO env var and NO flag, by reading
   `/proc/self/status` (Landlock is not introspectable; the seccomp filter, set only
   after the wall is up, is the truthful marker). If Landlock is unavailable it
   FAILS CLOSED: it asks for explicit consent through a native dialog
   (`window/showMessageRequest`, chosen by the client's declared capability — not a
   tty guess) and, without consent, announces the shutdown (`window/showMessage`)
-  and exits rather than running unsandboxed silently. Platforms with no Landlock
+  and exits rather than running unsandboxed silently. Editors are fed the workspace
+  only through `initialize` (no argv to the binary). Platforms with no Landlock
   (macOS/Windows) run as before. The user's build tree and config are never
   modified; setup state lives outside the workspace.
 

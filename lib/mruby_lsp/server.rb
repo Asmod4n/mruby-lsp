@@ -61,8 +61,64 @@ module MrubyLsp
 
     def lsp_initialized(msg)
       enforce_sandbox_consent # gate BEFORE any workspace work; may terminate
+      apply_read_wall         # stage-2 Landlock: now that @workspace is known
       populate_index
       nil
+    end
+
+    # Stage-2 Landlock (see ext/mruby_lsp_landlock + the launcher header). The
+    # launcher confined WRITES/EXEC before Ruby but left READS open, because the
+    # workspace is only knowable from the LSP `initialize` (which arrives after
+    # exec) and Landlock layers can only tighten. Now that @workspace is resolved
+    # we stack a layer that allows READS only beneath the project + the dirs Ruby
+    # itself needs, denying every read outside. Inherited by the rebuild child.
+    #
+    # Gated on SandboxStatus.confined?: the seccomp marker means stage-1 Landlock
+    # succeeded, i.e. the kernel HAS Landlock, so the ext (built on the same host)
+    # is present and restrict_reads will work. When unconfined the user already
+    # consented to run without the wall, so we don't attempt (and don't raise).
+    def apply_read_wall
+      require_relative "sandbox_status"
+      return unless SandboxStatus.confined?
+
+      begin
+        require "mruby_lsp_landlock"
+      rescue LoadError
+        # ext not built (e.g. from-checkout run); nothing to raise here.
+      end
+      unless defined?(MrubyLsp::Landlock) && MrubyLsp::Landlock.respond_to?(:restrict_reads)
+        warn "mruby-lsp: stage-1 confined but the stage-2 Landlock ext is " \
+             "unavailable — READS are NOT walled. Reinstall so " \
+             "ext/mruby_lsp_landlock builds."
+        return
+      end
+
+      reads = read_allowlist
+      # Let a real failure SURFACE (no silent rescue): when stage-1 confined us,
+      # restrict_reads must succeed; if it doesn't, that is a bug worth seeing.
+      MrubyLsp::Landlock.restrict_reads(reads)
+    end
+
+    # The READ set the stage-2 wall grants (on top of the system/Ruby base the C
+    # ext bakes in): the project, its mruby checkout + build cache, our state
+    # dirs, the Ruby install prefix, and every gem dir — everything the server and
+    # the (inherited) rebuild build legitimately read.
+    def read_allowlist
+      require_relative "build_discovery"
+      bd = MrubyLsp::Discovery::BuildDiscovery
+      paths = []
+      if @workspace
+        paths << @workspace
+        paths << (bd.resolve_mruby_root(@workspace) rescue nil)
+        paths << (bd.cache_dir(@workspace) rescue nil)
+      end
+      home = (bd.home_dir rescue Dir.home)
+      paths << File.join(home, ".cache", "mruby-lsp")
+      paths << File.join(home, ".local", "share", "mruby-lsp")
+      paths << RbConfig::CONFIG["prefix"]
+      paths.concat(Gem.path)
+      paths << Gem.dir << Gem.user_dir
+      paths.compact.uniq
     end
 
     # ── rebuild on save (standing consent only) ──────────────────────────────
