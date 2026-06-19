@@ -19,7 +19,7 @@ end
 # changes. Auto-detect, overridable via MRUBY_LSP_CODE.
 def editor_cli
   @editor_cli ||= ENV["MRUBY_LSP_CODE"] ||
-                  %w[codium code-oss code].find { |c| system("command -v #{c} > /dev/null 2>&1") } ||
+                  %w[codium code-oss code-server code].find { |c| system("command -v #{c} > /dev/null 2>&1") } ||
                   "code"
 end
 
@@ -406,7 +406,7 @@ namespace :vscode do
 
   desc "Build, package, and install the extension into VS Code (clean reinstall, bumps version)"
   task :install do
-    abort "VS Code CLI 'code' not found on PATH" unless system("command -v code > /dev/null 2>&1")
+    abort "editor CLI '#{editor_cli}' not found on PATH" unless system("command -v #{editor_cli} > /dev/null 2>&1")
 
     require "json"
     pkg = JSON.parse(File.read(File.join(VSCODE_DIR, "package.json")))
