@@ -1,6 +1,6 @@
 {
-  "value_bridge": "0.1.118",
-  "mruby-lsp": "0.1.118",
+  "value_bridge": "0.1.119",
+  "mruby-lsp": "0.1.119",
   "prism": "1.9.0",
   "language_server-protocol": "3.17.0.5",
   "rbs": "4.0.3",
