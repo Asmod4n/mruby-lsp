@@ -379,7 +379,18 @@ namespace :vscode do
     # rsync the result OUT, preserving its mtime.
     sh "rsync", "-a", "#{stage}/mruby-lsp-#{version}.vsix", final_vsix
 
-    puts "packaged #{final_vsix}"
+    # Signing-ready (Open VSX style via node-ovsx-sign — pure JS, so it works on
+    # FreeBSD &c. where @vscode/vsce-sign's native binaries don't exist; vsce
+    # stays 3.x, no downgrade). Opt-in: only signs when a PKCS#8 key is
+    # configured, so the build is ready to sign without forcing it now. Set
+    # MRUBY_LSP_VSIX_SIGN_KEY=/path/to/key.pem to emit <vsix>.sig + .manifest
+    # next to the package. (Pin node-ovsx-sign in package.json once adopted.)
+    if (key = ENV["MRUBY_LSP_VSIX_SIGN_KEY"].to_s).empty?
+      puts "packaged #{final_vsix} (unsigned; set MRUBY_LSP_VSIX_SIGN_KEY to sign)"
+    else
+      sh "npx", "--yes", "node-ovsx-sign", "sign", final_vsix, key
+      puts "packaged + signed #{final_vsix}"
+    end
   end
 
   desc "Verify the packaged .vsix has the pieces that silently break activation"
