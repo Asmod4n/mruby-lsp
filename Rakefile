@@ -363,7 +363,16 @@ namespace :vscode do
       marker = ".installed-lock"
       lock = "package-lock.json"
       if !File.directory?("node_modules") || !File.exist?(marker) || !FileUtils.identical?(lock, marker)
-        sh "npm install --no-audit --no-fund --loglevel=error"
+        # --ignore-scripts: the ONLY packages in this tree with install scripts
+        # are @vscode/vsce's signing/publishing helpers -- @vscode/vsce-sign
+        # (postinstall fetches native signing binaries with NO FreeBSD build; it
+        # ABORTS there, "platform freebsd ... not supported", killing the whole
+        # install) and keytar (a native binding.gyp keychain lib needing
+        # libsecret + node-gyp). vsce uses them only for `publish`/`login` and
+        # signing; `vsce package` needs neither, and we sign via node-ovsx-sign
+        # below. Both are FreeBSD-hostile, so skipping lifecycle scripts is safe
+        # on every OS and is what unblocks FreeBSD packaging.
+        sh "npm install --no-audit --no-fund --loglevel=error --ignore-scripts"
         FileUtils.cp(lock, marker)
       else
         puts "    deps up to date, skipping npm install"
