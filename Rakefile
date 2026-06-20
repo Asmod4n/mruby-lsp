@@ -112,6 +112,12 @@ namespace :gem do
   desc "Build the authored gems (mruby-lsp + value_bridge) into build/gems/ at the current version"
   task :build do
     Dir.chdir(__dir__) do
+      # Register the `theirs` merge driver this clone needs for the merge=theirs
+      # entries in .gitattributes (generated/release files: the COMMITTER's copy
+      # always wins, so a user's stale mtimes.json never clobbers the release's).
+      # Local to this clone, idempotent — safe on every build.
+      system("git", "config", "merge.theirs.driver", "cp -f %B %A") if File.directory?(".git")
+
       version = current_version
 
       # 1. Pin value_bridge to mruby-lsp's version (lockstep) BEFORE recording
