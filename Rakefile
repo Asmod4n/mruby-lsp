@@ -159,6 +159,19 @@ namespace :gem do
       sh "gem install#{user_flag} --force #{ml_gem}"
     end
   end
+
+  desc "Uninstall the authored gems (the post-uninstall hook clears launchers + caches)"
+  task :uninstall do
+    # mruby-lsp FIRST: its post-uninstall hook (lib/rubygems_plugin.rb) removes
+    # the launchers, the nonet helper, install.json, setup state, and the build
+    # caches once the LAST version is gone. value_bridge after — by then nothing
+    # depends on it. --all every version; --executables drops any launcher slot
+    # without a prompt; --force skips the dependency/confirm prompts; `|| true`
+    # keeps "not installed" from failing the task.
+    %w[mruby-lsp value_bridge].each do |g|
+      sh "gem uninstall --all --executables --force #{g} || true"
+    end
+  end
 end
 
 # ── Explicit, deliberate version bumps ──────────────────────────────────────
@@ -240,6 +253,9 @@ task build: "gem:build"
 
 desc "Build and install the authored gems (same-version overwrite, no bump)"
 task install: "gem:install"
+
+desc "Uninstall the authored gems (clears launchers, install record, and caches)"
+task uninstall: "gem:uninstall"
 
 namespace :vscode do
   desc "Install JS deps for the VS Code extension"
