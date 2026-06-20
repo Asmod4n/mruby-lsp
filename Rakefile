@@ -440,8 +440,13 @@ namespace :vscode do
       else
         puts "    deps up to date, skipping npm install"
       end
-      # Compile in-stage (out/extension.js is a fresh artifact, mtime = build).
-      sh "npm run compile"
+      # Bundle in-stage with esbuild: out/extension.js is ONE file with the JS
+      # runtime deps (vscode-languageclient, @vscode/debugadapter + the inline
+      # debug adapter) inlined, so node_modules is excluded from the .vsix
+      # (.vscodeignore) -- no more "243 files / 183 JS" vsce warning. esbuild's
+      # platform binary is an OPTIONAL dep, so it survives the --ignore-scripts
+      # install above. mtime = build time, a fresh artifact.
+      sh "npm run bundle"
       # vsce preserves the mtimes of what it packs; the stage carries the real
       # source mtimes, so they pass through into the vsix unchanged.
       sh "#{stage_vsce(stage)} package --no-git-tag-version --allow-missing-repository --out mruby-lsp-#{version}.vsix"
