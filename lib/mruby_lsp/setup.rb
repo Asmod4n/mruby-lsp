@@ -80,6 +80,21 @@ module MrubyLsp
       candidates.find { |p| File.file?(p) && File.executable?(p) }
     end
 
+    # Consent to run the OFFLINE build WITHOUT the network seal — reached only
+    # when the seal can't engage (no nonet binary / old kernel / unhardcoded
+    # arch). Mirrors the launcher's fail-closed sandbox gate (cli.rb): the editor
+    # passes --consent-no-network-seal after its own dialog; on a tty we ask
+    # inline. Non-tty with no flag => no consent here (the caller emits the
+    # sentinel and aborts so the editor can ask). NOT env-steered.
+    def net_seal_consented?(flag)
+      return true if flag
+      return false unless $stdin.tty?
+      warn "mruby-lsp-setup: WARNING — the offline-build network seal is " \
+           "unavailable on this host (old kernel or unsupported CPU architecture)."
+      $stderr.print "Build this project WITHOUT the network seal? [y/N] "
+      %w[y yes].include?(($stdin.gets || "").strip.downcase)
+    end
+
     # GEM_PATH for the compile children (the mruby `rake` build and the reflect
     # extconf). The editor extension launches us with GEM_PATH pointed at its
     # bundled gems so our own requires resolve; but when the editor itself ran with
@@ -95,6 +110,14 @@ module MrubyLsp
     ).reject { |p| p.nil? || p.empty? }.uniq.join(File::PATH_SEPARATOR)
 
     def run(argv)
+      # Pull the editor's explicit "build without the network seal" consent out of
+      # argv before the positional project path is read. The editor sets it ONLY
+      # after the user approves its dialog (see runSetupHeadless); a tty user can
+      # pass it too. It is consent, not a toggle — the seal is still attempted;
+      # the flag only authorises the unsealed fallback when it genuinely can't.
+      argv = argv.dup
+      consent_no_seal = !argv.delete("--consent-no-network-seal").nil?
+
       # ── -1. restore recorded mtimes ───────────────────────────────────────────
       # `gem install` stamps extraction-time mtimes on every file. mruby's build and
       # make are mtime-driven, so a reinstall of byte-identical files rebuilt
@@ -220,13 +243,32 @@ module MrubyLsp
         # clone calls, but they're idempotent (repos present) so no network is needed.
         # Degrade-safe: if the wrapper isn't on disk (non-Linux, or its optional build
         # failed) we build unwrapped — the fetch/build FS split still holds.
+        # The net seal is FAIL-CLOSED, like the Landlock FS wall: never build
+        # unsealed silently. Probe whether it can engage on THIS host/arch
+        # (mruby-lsp-nonet --check: exit 0 = sealable). If not, require explicit
+        # consent — tty prompt, the editor's --consent-no-network-seal flag, or
+        # (non-tty, no consent) emit the sentinel the extension watches and abort
+        # so it can show its dialog and re-invoke us with consent.
         nonet = locate_nonet
-        if nonet
+        seal_ok = nonet && system(nonet, "--check", out: File::NULL, err: File::NULL)
+        if seal_ok
           build_cmd = [nonet, "rake"]
-        else
-          warn "    mruby-lsp-nonet not found — building without the network seal " \
-               "(fetch/build FS split still applies)"
+        elsif !RbConfig::CONFIG["host_os"].include?("linux")
+          # The seccomp net seal is a Linux-only primitive — like Landlock, it is
+          # simply absent on macOS/Windows, so we build unwrapped exactly as
+          # before, with NO consent prompt. The fetch/build FS split still holds.
           build_cmd = ["rake"]
+        elsif net_seal_consented?(consent_no_seal)
+          warn "    building WITHOUT the network seal by your consent " \
+               "(fetch/build FS split still applies)."
+          build_cmd = ["rake"]
+        elsif $stdin.tty?
+          fail!("aborted — offline-build network seal unavailable and you declined to build without it.")
+        else
+          # Non-interactive (editor): the extension matches this sentinel, asks
+          # the user, and re-invokes with --consent-no-network-seal on approval.
+          $stdout.puts "MRUBY_LSP_NET_SEAL_UNAVAILABLE"
+          fail!("offline-build network seal unavailable on this host (old kernel or unsupported CPU architecture); consent required to build without it.")
         end
         ok = system(env, *build_cmd, chdir: mruby_root)
         fail!("mruby build failed (see output above)") unless ok

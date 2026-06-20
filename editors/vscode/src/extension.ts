@@ -467,24 +467,48 @@ function bootstrapGem(): Promise<boolean> {
 // Returns true on success. Used for the silent post-update rebuild: the native
 // fingerprint inside setup decides whether anything actually recompiles, so a
 // no-native-change update makes this a fast no-op.
-function runSetupHeadless(root: string): Promise<boolean> {
-  const setup = resolveSetupCommand();
-  // `setup` is the mruby-lsp-setup LAUNCHER — a compiled executable since the
-  // sandbox MVP, not a ruby script. Invoke it directly: it re-execs the Ruby
-  // impl itself, and running it through `ruby` would parse the ELF binary
-  // ("Invalid char '\x7F'"). The terminal paths already spawn it directly.
+// Spawn the mruby-lsp-setup LAUNCHER directly (a compiled executable since the
+// sandbox MVP, not a ruby script: it re-execs the Ruby impl itself, and running
+// it through `ruby` would parse the ELF binary — "Invalid char '\x7F'"). Returns
+// the exit code plus the combined stdout/stderr.
+function spawnSetup(setup: string, args: string[]): Promise<{ code: number | null; out: string }> {
   const env = bundlePath ? bundleEnv(bundlePath) : process.env;
   return new Promise((resolve) => {
-    const proc = cp.spawn(setup, [root], { env });
+    const proc = cp.spawn(setup, args, { env });
     let out = "";
     proc.stdout.on("data", (d) => (out += d.toString()));
     proc.stderr.on("data", (d) => (out += d.toString()));
-    proc.on("error", (e) => { output.appendLine(`post-update setup error: ${String(e)}`); resolve(false); });
-    proc.on("close", (code) => {
-      output.appendLine(`post-update setup (${root}) exit ${code}:\n${out}`);
-      resolve(code === 0);
-    });
+    proc.on("error", (e) => { output.appendLine(`setup error: ${String(e)}`); resolve({ code: 1, out }); });
+    proc.on("close", (code) => resolve({ code, out }));
   });
+}
+
+// Sentinel setup prints (non-interactively) when the offline-build network seal
+// can't engage and it needs consent before building unsealed.
+const NET_SEAL_UNAVAILABLE = "MRUBY_LSP_NET_SEAL_UNAVAILABLE";
+
+async function runSetupHeadless(root: string): Promise<boolean> {
+  const setup = resolveSetupCommand();
+  let { code, out } = await spawnSetup(setup, [root]);
+  output.appendLine(`post-update setup (${root}) exit ${code}:\n${out}`);
+
+  // Fail-closed net seal (mirrors the Landlock FS-wall consent): setup couldn't
+  // seal the offline build on this host and, having no tty, refused to build
+  // unsealed and emitted the sentinel. Ask the user; on approval, re-run with
+  // explicit consent. Decline => the build does not run.
+  if (code !== 0 && out.includes(NET_SEAL_UNAVAILABLE)) {
+    const pick = await vscode.window.showWarningMessage(
+      "mruby-lsp: the offline-build network seal isn't available on this system " +
+        "(old kernel or unsupported CPU architecture), so the build can't block the " +
+        "network while compiling your project's mruby. Build anyway, without the seal?",
+      { modal: true },
+      "Build without seal",
+    );
+    if (pick !== "Build without seal") return false;
+    ({ code, out } = await spawnSetup(setup, [root, "--consent-no-network-seal"]));
+    output.appendLine(`post-update setup (consented, ${root}) exit ${code}:\n${out}`);
+  }
+  return code === 0;
 }
 
 // Every workspace with a FINISHED build: one cache dir per workspace slug; read

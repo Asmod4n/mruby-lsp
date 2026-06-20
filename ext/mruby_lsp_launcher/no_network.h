@@ -9,8 +9,12 @@
  * networking must die. seccomp can read socket()'s first arg (the domain) — a
  * scalar, no TOCTOU pointer hazard — so we filter precisely.
  *
- * Degrade-safe: a no-op (returns 0) on arches whose syscall numbers we don't
- * hardcode, and returns -1 (caller logs + continues) if seccomp is unavailable.
+ * Return contract is THREE-way and never lies that a seal is up when it isn't:
+ *    0  — filter installed (network sealed).
+ *   -1  — seccomp present but the install syscall failed (errno set).
+ *    1  — cannot seal on THIS build: no seccomp headers, or an arch whose
+ *         __NR_socket we won't hardcode. The caller must treat this as UNSEALED
+ *         (fail-closed / ask consent) — NOT as success.
  * Requires PR_SET_NO_NEW_PRIVS already set OR sets it here.
  */
 #ifndef MRUBY_LSP_NO_NETWORK_H
@@ -33,6 +37,13 @@
 # endif
 #endif
 
+/* KILL_PROCESS (>= 4.14) nukes every thread; on older headers fall back to
+ * SECCOMP_RET_KILL (thread). A foreign-arch syscall here means a compat-ABI
+ * bypass attempt, so killing is the correct, standard response. */
+#if defined(MRUBY_LSP_HAVE_SECCOMP) && !defined(SECCOMP_RET_KILL_PROCESS)
+# define SECCOMP_RET_KILL_PROCESS SECCOMP_RET_KILL
+#endif
+
 /* The audit arch constant for THIS build. We only emit a filter for arches
  * whose __NR_socket we can trust at compile time; elsewhere the filter is a
  * no-op (never a wrong-syscall-number hazard). */
@@ -44,16 +55,21 @@
 # define MRUBY_LSP_AUDIT_ARCH 0
 #endif
 
-/* 0 = installed (or deliberately a no-op on an unsupported arch),
- * -1 = seccomp present but install failed (caller logs and continues). */
+/*  0 = installed,  -1 = seccomp present but install failed,
+ *  1 = cannot seal on this build (no headers / unhardcoded arch) — UNSEALED. */
 static int install_no_network_seccomp(void)
 {
 #if !defined(MRUBY_LSP_HAVE_SECCOMP) || MRUBY_LSP_AUDIT_ARCH == 0
-    return 0; /* no headers, or an arch we won't risk a hand-built filter on */
+    return 1; /* no headers, or an arch we won't risk a hand-built filter on:
+               * report UNSEALED so the caller fails closed, never a silent pass */
 #else
+    /* Foreign-arch syscalls (e.g. i386/x32 on an x86_64 kernel) must NOT slip
+     * through: a JEQ-mismatch -> ALLOW would let a compat-ABI socket() bypass
+     * the seal. Mismatch -> KILL_PROCESS instead. A legit native build never
+     * issues foreign-arch syscalls. */
     struct sock_filter f[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, MRUBY_LSP_AUDIT_ARCH, 0, 7), /* foreign arch -> ALLOW */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, MRUBY_LSP_AUDIT_ARCH, 0, 8), /* foreign arch -> KILL */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_socket, 0, 5),         /* not socket -> ALLOW */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
@@ -61,7 +77,8 @@ static int install_no_network_seccomp(void)
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET6, 1, 0),           /* AF_INET6 -> ERRNO */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),                  /* AF_UNIX &c. ok */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EACCES & SECCOMP_RET_DATA)),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),                  /* default ALLOW */
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),                  /* not-socket -> ALLOW */
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),           /* foreign arch */
     };
     struct sock_fprog prog = {
         .len = (unsigned short)(sizeof f / sizeof f[0]),

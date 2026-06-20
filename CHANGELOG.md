@@ -62,6 +62,16 @@ what mruby "usually" has.
   only through `initialize` (no argv to the binary). Platforms with no Landlock
   (macOS/Windows) run as before. The user's build tree and config are never
   modified; setup state lives outside the workspace.
+- The OFFLINE BUILD PHASE (`mruby-lsp-setup`) is network-sealed the same spirit
+  and now FAILS CLOSED. A seccomp-BPF filter denies `AF_INET`/`AF_INET6`
+  `socket()` while the fetched build code (`rake`/`gcc`/`mrbgem.rake`) runs, so it
+  can't phone home or pull more code; `AF_UNIX`, pipes, and file I/O stay intact.
+  The filter covers x86_64/aarch64 and **kills foreign-arch syscalls** (closing the
+  i386/x32 compat-ABI bypass), and the wrapper refuses to exec the build unsealed:
+  where the seal can't engage on Linux (old kernel, unhardcoded CPU arch) the build
+  is never run unsealed silently — setup asks for **explicit consent** (a tty
+  prompt, or the editor's consent dialog), exactly like the Landlock wall. Non-Linux
+  has no such primitive and builds as before.
 
 ### Fixed
 - Install: the compiled launchers (`mruby-lsp` / `mruby-lsp-setup` /

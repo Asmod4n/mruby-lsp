@@ -111,8 +111,16 @@ Slice 2 (DONE) is the PHASE split with a network seal on the build:
   (ext/mruby_lsp_launcher/no_network.h) fails AF_INET/AF_INET6 `socket()` with
   EACCES while leaving AF_UNIX/pipes/file I/O intact; fetched build code can't
   phone home. Re-eval re-runs the gem calls but `git_clone_dependency` returns
-  early when `.git` exists → zero network. Degrade-safe: unwrapped build if the
-  wrapper is absent. The SERVER role is intentionally NOT sealed — an inherited
+  early when `.git` exists → zero network. The filter covers x86_64/aarch64 and
+  KILLs foreign-arch syscalls (no i386/x32 compat bypass), and it is FAIL-CLOSED:
+  the wrapper refuses to exec the build unsealed, and `install_no_network_seccomp`
+  reports a distinct "unsealable" code (never a silent success) on an unhardcoded
+  arch / missing headers. When the seal can't engage on Linux, setup does NOT
+  build unsealed silently — it gets explicit consent (tty prompt, or the editor's
+  dialog via the `MRUBY_LSP_NET_SEAL_UNAVAILABLE` sentinel + a re-invoke with
+  `--consent-no-network-seal`), mirroring the Landlock FS-wall consent. Non-Linux
+  has no such primitive and builds as before. The SERVER role is intentionally
+  NOT sealed — an inherited
   filter would block the fetches its own rebuild-spawn (the `setup` role,
   `lib/mruby_lsp/setup.rb`) must do when a gem is added.
 

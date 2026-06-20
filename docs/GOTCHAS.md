@@ -221,6 +221,19 @@ network) as a child that INHERITS the filter, so a network-deny here would break
 the fetch; the real net seal stays in mruby-lsp-nonet around the BUILD phase,
 stacked on top.
 
+The BUILD-phase net seal (no_network.h) has two seccomp footguns, both rooted in
+"unknown arch == allow", both fixed. (1) A hand-built socket()-domain filter only
+covers arches whose `__NR_socket` is hardcoded (x86_64/aarch64); on any other,
+`install_no_network_seccomp` must report a DISTINCT "unsealable" code — returning
+0 there (as it once did) is a silent FAIL-OPEN: nonet would exec the build with
+full network while the caller believed it sealed. (2) The BPF must KILL on a
+foreign `seccomp_data.arch`, not ALLOW — else a 32-bit `int 0x80`/x32 `socket()`
+on an x86_64 kernel sails straight past the filter (the classic compat-ABI
+bypass). With both fixed the seal is FAIL-CLOSED: nonet refuses to exec unsealed,
+and setup escalates to explicit consent (tty prompt, or the editor dialog via the
+`MRUBY_LSP_NET_SEAL_UNAVAILABLE` sentinel + `--consent-no-network-seal`) — never a
+silent unsealed build. Non-Linux has no seccomp and builds as before.
+
 No confinement → FAIL CLOSED with consent. Unconfined (Linux without Landlock) is
 never silent: the server asks via `window/showMessageRequest`, gated on the
 client's declared `window.showMessage` capability — NOT a tty guess (every editor
