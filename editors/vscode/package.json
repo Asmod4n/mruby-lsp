@@ -176,7 +176,8 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "vscode:prepublish": "npm run compile",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "vscode:prepublish": "npm run bundle",
     "test": "mocha",
     "test:debug-adapter": "node debug/mrdbDebugSession.test.js",
     "pretest": "npm run compile"
@@ -191,6 +192,7 @@
     "@types/vscode": "^1.75.0",
     "@vscode/debugprotocol": "^1.68.0",
     "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.28.0",
     "mocha": "^11.7.6",
     "typescript": "^5.0.0"
   }

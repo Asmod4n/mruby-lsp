@@ -4,5 +4,8 @@ src/**
 **/*.map
 tsconfig.json
 .gitignore
-node_modules/.bin/**
+.vscodeignore
+.mocharc.json
+**/*.test.js
+node_modules/**
 **/.vscode-test/**

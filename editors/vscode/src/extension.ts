@@ -42,41 +42,65 @@ function findRuby(): string | undefined {
   return undefined;
 }
 
-// The version the vendored bundle ships (from vendor/gems/manifest.json). The
-// install is keyed off this: reinstall only when it changes, so a marketplace
-// UPDATE (new .vsix => new manifest version) triggers exactly one reinstall and
-// nothing else does. Content-based, immune to file mtimes.
-function vendoredVersion(extPath: string): string | undefined {
+// The vendored bundle's manifest (vendor/gems/manifest.json), written at
+// package time. Carries per-gem versions, the `native` fingerprint, and the
+// `bundle` digest.
+function bundleManifest(extPath: string): Record<string, string> | undefined {
   try {
     const m = path.join(extPath, "vendor", "gems", "manifest.json");
     if (!fs.existsSync(m)) return undefined;
-    return JSON.parse(fs.readFileSync(m, "utf8"))["mruby-lsp"];
+    return JSON.parse(fs.readFileSync(m, "utf8"));
   } catch {
     return undefined;
   }
 }
 
-// Install the vendored gems into a writable GEM_PATH under globalStorage, once
-// per version. Returns the bundle path, or undefined if there is no vendored
-// bundle (dev checkout) or the install failed. Idempotent: if the installed
-// marker already matches the vendored version, it's a no-op.
+// The bundle's CONTENT digest (manifest.json's `bundle` field): a SHA256 over
+// every shipped .gem's bytes. The install is keyed off THIS, not the SemVer:
+// reinstall iff the shipped digest differs from the one we last recorded, so a
+// changed gem set triggers exactly one reinstall and an identical set never
+// does — independent of the version number, immune to file mtimes.
+function vendoredBundleDigest(extPath: string): string | undefined {
+  const m = bundleManifest(extPath);
+  const d = m?.["bundle"];
+  return typeof d === "string" && d.length > 0 ? d : undefined;
+}
+
+// The mruby-lsp version the bundle ships — for human-readable log lines only,
+// never the reinstall trigger.
+function vendoredVersion(extPath: string): string | undefined {
+  return bundleManifest(extPath)?.["mruby-lsp"];
+}
+
+// Install the vendored gems into a writable GEM_PATH under globalStorage,
+// reinstalling by CONTENT. Returns the bundle path, or undefined if there is no
+// vendored bundle (dev checkout) or the install failed. Idempotent: if the
+// recorded bundle digest already matches the shipped one, it's a no-op —
+// reinstall is triggered by a changed gem set, NOT by the SemVer.
 async function ensureBundle(context: vscode.ExtensionContext): Promise<string | undefined> {
   const extPath = context.extensionPath;
   const vendorDir = path.join(extPath, "vendor", "gems");
-  const version = vendoredVersion(extPath);
-  if (!version || !fs.existsSync(vendorDir)) {
+  const digest = vendoredBundleDigest(extPath);
+  if (!digest || !fs.existsSync(vendorDir)) {
     output.appendLine("bundle: no vendored gems in this build (dev checkout?) — using global discovery");
     return undefined;
   }
+  // For log lines only; the trigger is the content digest above.
+  const version = vendoredVersion(extPath) ?? "?";
 
-  // globalStorage is writable AND removed on uninstall. Install per version so
-  // an extension update rebuilds the bundle; same version is a no-op.
+  // globalStorage is writable AND removed on uninstall. The install marker
+  // records the installed bundle DIGEST; a build whose gem set differs (any new
+  // SHA) reinstalls, an identical set is a no-op — regardless of version.
   const storage = context.globalStorageUri.fsPath;
   const gemDir = path.join(storage, "gems");
-  const marker = path.join(storage, `installed-${version}`);
+  const marker = path.join(storage, "installed-bundle");
   if (fs.existsSync(marker) && fs.existsSync(gemDir)) {
-    output.appendLine(`bundle: ${version} already installed at ${gemDir}`);
-    return gemDir;
+    let installed = "";
+    try { installed = fs.readFileSync(marker, "utf8").trim(); } catch { /* re-install */ }
+    if (installed === digest) {
+      output.appendLine(`bundle: ${digest.slice(0, 12)}… (v${version}) already installed at ${gemDir}`);
+      return gemDir;
+    }
   }
 
   const ruby = findRuby();
@@ -87,7 +111,7 @@ async function ensureBundle(context: vscode.ExtensionContext): Promise<string | 
     return undefined;
   }
 
-  // Fresh dir for this version (drop any older bundle so we don't accumulate).
+  // Fresh dir for this bundle (drop any older bundle so we don't accumulate).
   try {
     fs.rmSync(gemDir, { recursive: true, force: true });
   } catch { /* first run: nothing to remove */ }
@@ -126,15 +150,16 @@ async function ensureBundle(context: vscode.ExtensionContext): Promise<string | 
   );
   if (!ok) return undefined;
 
-  // Stamp success: a marker file naming the version. Drop older markers.
+  // Stamp success: a single marker recording the installed bundle DIGEST. Drop
+  // any legacy per-version markers (installed-<version>) from older builds.
   try {
     for (const f of fs.readdirSync(storage)) {
-      if (f.startsWith("installed-") && f !== `installed-${version}`) {
+      if (f.startsWith("installed-") && f !== "installed-bundle") {
         fs.rmSync(path.join(storage, f), { force: true });
       }
     }
   } catch { /* ignore */ }
-  fs.writeFileSync(marker, version);
+  fs.writeFileSync(marker, digest);
   output.appendLine(`bundle: ready, GEM_PATH=${gemDir}`);
   return gemDir;
 }

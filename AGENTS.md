@@ -101,14 +101,21 @@ is incompatible with this premise.
     committing).
 - **Delivery: a `git format-patch` file, not a branch/push** unless explicitly
   asked. `git am` replays the recorded author cleanly on the maintainer's side.
-- **Generated/version-bumped files never block a merge.** `.gitattributes` marks
-  the `rake`-regenerated files (`lib/mruby_lsp/version.rb`,
-  `vendor/value_bridge/lib/value_bridge/version.rb`, `share/mtimes.json`,
-  `editors/vscode/vendor/gems/manifest.json`, `editors/vscode/package.json`) as
-  `merge=ours`, so a merge always keeps our side and they never conflict. The
-  `ours` driver is registered per-clone by `rake` (gem:bump runs
-  `git config merge.ours.driver true`); set it by hand in a clone that never runs
-  rake. NOTE the package.json caveat in `.gitattributes`.
+- **Generated/release-stamped files never block a merge, and the COMMITTER's
+  copy always wins.** `.gitattributes` marks the `rake`-regenerated files
+  (`lib/mruby_lsp/version.rb`, `vendor/value_bridge/lib/value_bridge/version.rb`,
+  `share/mtimes.json`, `editors/vscode/package.json`) as `merge=theirs`, so a
+  merge always takes the INCOMING side — never a stale local copy. This matters
+  most for `share/mtimes.json`: setup restores those mtimes so mruby only
+  rebuilds what actually changed in the release; if a user's local mtimes won
+  (the old `merge=ours`), every update would rebuild everything (minutes).
+  Versioning is DELIBERATE (`rake bump:patch` / `bump:minor` / `bump:major`); no
+  task auto-bumps. The vendored-gem manifest is no longer tracked — it is
+  generated into the `.vsix` stage at package time. Register the driver per-clone
+  with `git config merge.theirs.driver 'cp -f %B %A'` (gem:build does this
+  automatically). The recorded mtimes MUST come from your real working tree (your
+  edit times) — never regenerate them in a fresh clone/CI, which stamps every
+  file the same and defeats the incremental build.
 
 ## Environment
 

@@ -31,9 +31,41 @@ cd editors/vscode && npm install && npm run compile     # build the extension
 Full editor install and per-project setup are in the [README](README.md)
 (`rake vscode:install` / `rake install` + `mruby-lsp-setup`).
 
-Packaging the extension (`rake vscode:package` / `vscode:install`) shells out to
-`rsync` to stage the sources. It ships by default on most Linux/macOS but is NOT
-in the FreeBSD base system — `pkg install rsync` there.
+### Build layout and versioning
+
+Everything transient builds under **`build/`** — nothing lands in the source
+tree:
+
+- `build/gems/` — the two gems we author (`mruby-lsp`, `value_bridge`), built
+  once by `rake gem:build` at the current version.
+- `build/stage/` — the `.vsix` assembly area (staged extension source + the
+  fetched external-gem closure).
+- `build/mruby-lsp-<v>.vsix` — the packaged extension.
+
+`rake clobber` removes `build/` (and `mruby/build/`) entirely — the single
+cleanup command.
+
+**Versioning is deliberate.** `lib/mruby_lsp/version.rb` is the single,
+hand-set SemVer source of truth. No build, install, or package task bumps it; a
+same-version `rake install` reinstalls cleanly (`gem install --force`) so you can
+iterate without bumping. To cut a release, run an explicit bump (each writes
+`version.rb` + the extension `package.json` and pins `value_bridge` in lockstep):
+
+```bash
+rake bump:patch   # 0.1.120 -> 0.1.121
+rake bump:minor   # 0.1.120 -> 0.2.0
+rake bump:major   # 0.1.120 -> 1.0.0
+```
+
+External runtime deps (prism, rbs, language_server-protocol, …) are **not** kept
+in the repo: `rake vscode:package` fetches the full source-gem closure into the
+`.vsix` stage at package time (needs network), so the shipped `.vsix` is
+self-contained but the repo stays source-only.
+
+Packaging the extension (`rake vscode:package` / `vscode:install`) stages the
+sources with `rsync` when present (it ships by default on most Linux/macOS but is
+NOT in the FreeBSD base system — `pkg install rsync` there); without `rsync` it
+falls back to an equivalent in-Rakefile copy that preserves mtimes.
 
 ## Tests
 
