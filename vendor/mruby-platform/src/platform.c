@@ -5,7 +5,8 @@
  * mruby -- not the host of any embedder, and not a runtime guess. Read them
  * from Ruby as plain symbol constants:
  *
- *     Platform::OS         # => :linux | :macos | :windows | :unknown
+ *     Platform::OS         # => :linux | :macos | :windows | :freebsd | :netbsd
+ *                          #    | :openbsd | :dragonfly | :unknown
  *     Platform::Toolchain  # => :gcc | :clang | :msvc | :unknown
  *
  * Values use MRB_SYM(): compile-time symbol constants, no runtime intern. The
@@ -32,6 +33,16 @@ mrb_mruby_platform_gem_init(mrb_state *mrb)
   mrb_sym os = MRB_SYM(macos);
 #elif defined(__linux__)
   mrb_sym os = MRB_SYM(linux);
+/* DragonFly before FreeBSD: it derives from FreeBSD 4 and some compat layers
+ * define __FreeBSD__, but __DragonFly__ is the authoritative marker. */
+#elif defined(__DragonFly__)
+  mrb_sym os = MRB_SYM(dragonfly);
+#elif defined(__FreeBSD__)
+  mrb_sym os = MRB_SYM(freebsd);
+#elif defined(__NetBSD__)
+  mrb_sym os = MRB_SYM(netbsd);
+#elif defined(__OpenBSD__)
+  mrb_sym os = MRB_SYM(openbsd);
 #else
   mrb_sym os = MRB_SYM(unknown);
 #endif

@@ -19,7 +19,7 @@ end
 # changes. Auto-detect, overridable via MRUBY_LSP_CODE.
 def editor_cli
   @editor_cli ||= ENV["MRUBY_LSP_CODE"] ||
-                  %w[codium code-oss code].find { |c| system("command -v #{c} > /dev/null 2>&1") } ||
+                  %w[codium code-oss code-server code].find { |c| system("command -v #{c} > /dev/null 2>&1") } ||
                   "code"
 end
 
@@ -363,7 +363,16 @@ namespace :vscode do
       marker = ".installed-lock"
       lock = "package-lock.json"
       if !File.directory?("node_modules") || !File.exist?(marker) || !FileUtils.identical?(lock, marker)
-        sh "npm install --no-audit --no-fund --loglevel=error"
+        # --ignore-scripts: the ONLY packages in this tree with install scripts
+        # are @vscode/vsce's signing/publishing helpers -- @vscode/vsce-sign
+        # (postinstall fetches native signing binaries with NO FreeBSD build; it
+        # ABORTS there, "platform freebsd ... not supported", killing the whole
+        # install) and keytar (a native binding.gyp keychain lib needing
+        # libsecret + node-gyp). vsce uses them only for `publish`/`login` and
+        # signing; `vsce package` needs neither, and we sign via node-ovsx-sign
+        # below. Both are FreeBSD-hostile, so skipping lifecycle scripts is safe
+        # on every OS and is what unblocks FreeBSD packaging.
+        sh "npm install --no-audit --no-fund --loglevel=error --ignore-scripts"
         FileUtils.cp(lock, marker)
       else
         puts "    deps up to date, skipping npm install"
@@ -379,7 +388,18 @@ namespace :vscode do
     # rsync the result OUT, preserving its mtime.
     sh "rsync", "-a", "#{stage}/mruby-lsp-#{version}.vsix", final_vsix
 
-    puts "packaged #{final_vsix}"
+    # Signing-ready (Open VSX style via node-ovsx-sign — pure JS, so it works on
+    # FreeBSD &c. where @vscode/vsce-sign's native binaries don't exist; vsce
+    # stays 3.x, no downgrade). Opt-in: only signs when a PKCS#8 key is
+    # configured, so the build is ready to sign without forcing it now. Set
+    # MRUBY_LSP_VSIX_SIGN_KEY=/path/to/key.pem to emit <vsix>.sig + .manifest
+    # next to the package. (Pin node-ovsx-sign in package.json once adopted.)
+    if (key = ENV["MRUBY_LSP_VSIX_SIGN_KEY"].to_s).empty?
+      puts "packaged #{final_vsix} (unsigned; set MRUBY_LSP_VSIX_SIGN_KEY to sign)"
+    else
+      sh "npx", "--yes", "node-ovsx-sign", "sign", final_vsix, key
+      puts "packaged + signed #{final_vsix}"
+    end
   end
 
   desc "Verify the packaged .vsix has the pieces that silently break activation"
@@ -406,7 +426,7 @@ namespace :vscode do
 
   desc "Build, package, and install the extension into VS Code (clean reinstall, bumps version)"
   task :install do
-    abort "VS Code CLI 'code' not found on PATH" unless system("command -v code > /dev/null 2>&1")
+    abort "editor CLI '#{editor_cli}' not found on PATH" unless system("command -v #{editor_cli} > /dev/null 2>&1")
 
     require "json"
     pkg = JSON.parse(File.read(File.join(VSCODE_DIR, "package.json")))

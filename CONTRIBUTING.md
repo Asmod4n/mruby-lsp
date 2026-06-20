@@ -31,6 +31,10 @@ cd editors/vscode && npm install && npm run compile     # build the extension
 Full editor install and per-project setup are in the [README](README.md)
 (`rake vscode:install` / `rake install` + `mruby-lsp-setup`).
 
+Packaging the extension (`rake vscode:package` / `vscode:install`) shells out to
+`rsync` to stage the sources. It ships by default on most Linux/macOS but is NOT
+in the FreeBSD base system — `pkg install rsync` there.
+
 ## Tests
 
 ```bash
