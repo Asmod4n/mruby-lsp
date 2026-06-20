@@ -811,10 +811,10 @@ Every position/range we emit goes through Prism's code-units API
 UTF-16 columns. That API doesn't exist on old prism — a stale prism (e.g. the
 0.19 that ships as a Ruby default gem) blows up with `undefined method
 start_code_units_column` the moment the buffer harvester runs. The gemspec floor
-is `>= 1.9.0` and the VS Code bundle vendors exactly 1.9.0
-(`editors/vscode/vendor/gems/manifest.json`); if a default/older prism shadows
-it, `gem install prism -v 1.9.0` (build from the `v1.9.0` tag if rubygems is
-blocked: `ruby templates/template.rb` then `gem build prism.gemspec`).
+is `>= 1.9.0` and the VS Code bundle vendors exactly 1.9.0 (recorded in the
+`.vsix`'s generated `vendor/gems/manifest.json`); if a default/older prism
+shadows it, `gem install prism -v 1.9.0` (build from the `v1.9.0` tag if rubygems
+is blocked: `ruby templates/template.rb` then `gem build prism.gemspec`).
 
 ### reflect.so pairs with the value_bridge gem by ABI — install, don't $LOAD_PATH
 `mruby_reflect.so` is compiled against a specific libmruby AND is driven through
@@ -824,17 +824,18 @@ built .so produces native crashes that look like VM bugs but are ABI mismatch.
 Install the gem properly (`rake install`, which pulls value_bridge at the matched
 version), then drive. Never mix a hand-pathed value_bridge with an installed .so.
 
-### rubygems may be blocked — install deps from the vendored sources offline
-The external runtime deps `prism` and `language_server-protocol` are shipped as
-.gem files under `editors/vscode/vendor/gems/` (see `manifest.json`); `rbs`
-(>= 3.0, now a dependency for inline-annotation parsing) is fetched there too at
-package time by `rake vscode:vendor_gems` but is not committed because it has a
-native ext. `value_bridge` is NOT a vendored .gem — it ships as SOURCE under
-`vendor/value_bridge/` and `rake install` builds + installs it locally to satisfy
-the gemspec's `add_dependency`. When rubygems.org is unreachable, install the
-committed .gems with `gem install --local <file>.gem` before installing
-mruby-lsp. Build prism/rbs/value_bridge exts at install time -> needs `ruby-dev`
-headers present.
+### rubygems may be blocked — the .vsix carries the full dep closure offline
+The external runtime deps (`prism`, `language_server-protocol`, `rbs` >= 3.0 and
+its transitive closure) are NO LONGER committed to the repo. `rake vscode:package`
+fetches the full source-gem closure (`gem fetch --platform ruby`) DIRECTLY into
+the `.vsix` stage (`build/stage/vendor/gems/`) at package time; the resulting
+`.vsix` is self-contained and the extension installs those .gems offline
+(`gem install --local`) into its own GEM_PATH. `value_bridge` is NOT a vendored
+.gem either — it ships as SOURCE under `vendor/value_bridge/` and `rake install`
+builds + installs it locally to satisfy the gemspec's `add_dependency`. So
+producing the `.vsix` DOES need network (for the fetch); installing it does not.
+Build prism/rbs/value_bridge exts at install time -> needs `ruby-dev` headers
+present.
 
 ### value_bridge must be findable when setup builds the reflect ext
 `mruby-lsp-setup` copies `ext/mruby_reflect/*` into the XDG cache and runs

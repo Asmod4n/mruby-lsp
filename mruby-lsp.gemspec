@@ -19,14 +19,32 @@ Gem::Specification.new do |spec|
     Dir.glob("bin/*") +
     Dir.glob("share/*") +
     Dir.glob("ext/**/*.{rb,c,h}") +
-    # Vendored internal gem (value_bridge): ship its source so the mruby build
+    # Vendored internal gem (value_bridge): ship its SOURCE so the mruby build
     # (mgem face) and the reflect ext (CRuby leg) find it inside the installed
     # gem. It is ALSO installed as its own gem by `rake install` to satisfy the
     # add_dependency below -- same single source, two consumers.
-    Dir.glob("vendor/value_bridge/**/*").select { |f| File.file?(f) } +
-    # Same model for mruby-platform: ship its source so the wrapper's
+    #
+    # SOURCE ONLY: `Dir.glob` reads the filesystem (ignores git), so on-disk
+    # cruft (a stray local *.gem, pkg/, build/) would otherwise leak into the
+    # SHIPPED gem and on into a release. Enumerate the source subdirs explicitly
+    # and ship no .gem; the jruby leg, tests, and tasks/ are not needed by the
+    # CRuby/mruby consumers here, so they are dropped.
+    Dir.glob("vendor/value_bridge/{src,include,lib,mrblib,ext,cruby}/**/*").select { |f| File.file?(f) } +
+    %w[
+      vendor/value_bridge/mrbgem.rake
+      vendor/value_bridge/value_bridge.gemspec
+      vendor/value_bridge/README.md
+      vendor/value_bridge/LICENSE
+    ].select { |f| File.file?(f) } +
+    # Same model for mruby-platform: ship its SOURCE so the wrapper's
     # `conf.gem gemdir: vendor/mruby-platform` resolves in the installed gem.
-    Dir.glob("vendor/mruby-platform/**/*").select { |f| File.file?(f) } +
+    # Source subdirs only — no test/, no *.gem.
+    Dir.glob("vendor/mruby-platform/src/**/*").select { |f| File.file?(f) } +
+    %w[
+      vendor/mruby-platform/mrbgem.rake
+      vendor/mruby-platform/README.md
+      vendor/mruby-platform/LICENSE
+    ].select { |f| File.file?(f) } +
     # Local mgems shipped INSIDE the gem so the wrapper's `conf.gem gemdir:`
     # (share/wrapper_build_config.rb, relative to share/ -> ../gems/<name>)
     # resolves in the installed gem, not just dev-from-repo. mruby-irep-reflect
@@ -71,7 +89,8 @@ Gem::Specification.new do |spec|
   # >= 1.9.0: the features lean on the code-units position API
   # (start_code_units_column / cached_*_code_units_*) for correct UTF-16 columns;
   # older prism lacks it and raises NoMethodError at first edit. 1.9.0 is also the
-  # version vendored + tested (editors/vscode/vendor/gems/manifest.json).
+  # version vendored + tested (the .vsix's vendor/gems/manifest.json, generated
+  # at package time by `rake vscode:package`).
   spec.add_dependency "prism", ">= 1.9.0"
   spec.add_dependency "language_server-protocol", "~> 3.17"
   spec.add_dependency "rbs", ">= 3.0"

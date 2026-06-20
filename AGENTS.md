@@ -104,11 +104,13 @@ is incompatible with this premise.
 - **Generated/version-bumped files never block a merge.** `.gitattributes` marks
   the `rake`-regenerated files (`lib/mruby_lsp/version.rb`,
   `vendor/value_bridge/lib/value_bridge/version.rb`, `share/mtimes.json`,
-  `editors/vscode/vendor/gems/manifest.json`, `editors/vscode/package.json`) as
-  `merge=ours`, so a merge always keeps our side and they never conflict. The
-  `ours` driver is registered per-clone by `rake` (gem:bump runs
-  `git config merge.ours.driver true`); set it by hand in a clone that never runs
-  rake. NOTE the package.json caveat in `.gitattributes`.
+  `editors/vscode/package.json`) as `merge=ours`, so a merge always keeps our
+  side and they never conflict. Versioning is DELIBERATE now (`rake bump:patch`
+  / `bump:minor` / `bump:major`); no task auto-bumps. The vendored-gem manifest
+  is no longer tracked — it is generated into the `.vsix` stage at package time.
+  Register the `ours` driver per-clone with `git config merge.ours.driver true`
+  (the SessionStart hook does this for agent sessions). NOTE the package.json
+  caveat in `.gitattributes`.
 
 ## Environment
 

@@ -73,6 +73,23 @@ what mruby "usually" has.
   prompt, or the editor's consent dialog), exactly like the Landlock wall. Non-Linux
   has no such primitive and builds as before.
 
+### Build & release
+- **Deliberate SemVer.** `lib/mruby_lsp/version.rb` is the single hand-set
+  version; no build/install/package task bumps it. Releases use explicit
+  `rake bump:patch` / `bump:minor` / `bump:major` (each writes `version.rb` +
+  the extension `package.json` and pins `value_bridge` in lockstep). A
+  same-version `rake install` reinstalls cleanly (`gem install --force`).
+- **External deps and build artifacts no longer live in the repo.** The
+  previously committed `prism` / `language_server-protocol` `.gem` files and the
+  vendored-gem `manifest.json` are removed; the full external runtime-dep closure
+  is fetched into the `.vsix` at package time, so the source tree stays
+  source-only. The `.vsix` remains self-contained for offline install.
+- **One `build/` directory for everything transient** (`build/gems`,
+  `build/stage`, the packaged `build/mruby-lsp-<v>.vsix`); `rake clobber` removes
+  it. The extension now reinstalls its bundled gems by a CONTENT digest (a
+  `bundle` field in the manifest) rather than the version, so a changed gem set
+  triggers exactly one reinstall, independent of the SemVer.
+
 ### Fixed
 - Install: the compiled launchers (`mruby-lsp` / `mruby-lsp-setup` /
   `mruby-lsp-update` / `mruby-lsp-nonet`) now go to `Gem.bindir` — the
