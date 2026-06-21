@@ -27,6 +27,16 @@ what mruby "usually" has.
   functions (`return io_init(mrb, obj)`) — so completion/hover on the result
   resolve to the right class.
 
+### Snippets / scaffolds (beyond ruby-lsp)
+- Completion offers keyword/DSL scaffolds — `class` (named, with `initialize`),
+  `def`, `attr_reader`/`writer`/`accessor`, `alias_method`,
+  `include`/`prepend`/`extend` — with punctuation pre-filled and tab stops on the
+  holes. After a receiver, block scaffolds (`each do |…|`) carry block-parameter
+  names READ FROM the method's own source: `yield` / block-call in Ruby;
+  `mrb_yield` / `mrb_funcall` in C, tracking the `mrb_get_args` `&` block value
+  (the argv-family forms carry no per-value name → no scaffold rather than a
+  guess). Emitted only to clients that advertise `snippetSupport`.
+
 ### Debugging
 - F5 debugging of `.rb`/`.mrb` via the user's own `mrdb` over the Debug Adapter
   Protocol: breakpoints, step, `info locals`, evaluate. Launches paused on the

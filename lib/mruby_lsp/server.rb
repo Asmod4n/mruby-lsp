@@ -270,7 +270,19 @@ module MrubyLsp
       doc = @mutex.synchronize { @store.get(uri) }
       return { isIncomplete: false, items: [] } unless doc
 
-      { isIncomplete: false, items: Completion.items(doc, position, @index) }
+      # isIncomplete: the list is PREFIX-DEPENDENT (methods are filtered by the
+      # typed prefix, and block/keyword scaffolds are only emitted for a non-empty
+      # prefix). Saying it's complete makes a client cache the trigger-time list
+      # (empty prefix at the `.`, no scaffolds) and filter it client-side, so the
+      # scaffolds never appear until a fresh request. True = re-ask as you type.
+      { isIncomplete: true, items: Completion.items(doc, position, @index, snippets: snippet_support?) }
+    end
+
+    # Does the client render snippet completion items (tab-stop templates)? A
+    # CLIENT capability — emitting insertTextFormat:2 to a client without it
+    # inserts the raw `${1:..}`, so keyword scaffolds are gated on it.
+    def snippet_support?
+      @client_capabilities.to_h.dig(:textDocument, :completion, :completionItem, :snippetSupport) ? true : false
     end
 
     # Lazy per-item documentation, ruby-lsp semantics (CompletionResolve):

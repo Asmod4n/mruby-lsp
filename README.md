@@ -49,6 +49,16 @@ defines a built-in — plus signature help with real overloads, find-references,
 rename, document & workspace symbols, semantic highlighting, type hierarchy,
 inlay hints, folding, and selection ranges.
 
+**Scaffolds you can be lazy with.** Type a few letters and take a snippet: `class`
+(named, with an `initialize`), `def`, and the class-body DSL —
+`attr_reader`/`attr_writer`/`attr_accessor`, `alias_method`,
+`include`/`prepend`/`extend` — drop in with the `:`/`,` already there and the
+cursor on the first hole. After a receiver you also get block forms (`coll.each`
+→ `each do |…|`) whose parameter names are **read from the method's own source** —
+its `yield`/`block.call` in Ruby, `mrb_yield`/`mrb_funcall` in C (tracking the
+captured block value) — never guessed. Emitted only to editors that advertise
+snippet support.
+
 **Unsaved edits count immediately.** Classes and methods you're typing right now —
 `include`/`prepend`/`extend`, `attr_*`, `alias`, visibility changes, even
 `undef_method` — take effect as you type, layered over the compiled VM with

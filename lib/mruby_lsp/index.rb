@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 require "set"
+require "prism"
 require_relative "param_format"
+require_relative "block_params"
 module MrubyLsp
   # An entry in the index. Plain data — no ruby-lsp types. The Reflector (T3.2)
   # populates these from the live VM; the language features (T4.x) read them.
@@ -88,6 +90,8 @@ module MrubyLsp
       @ctype_memo = {}
       @cdoc_memo = {}
       @csig_memo = {}
+      @yield_memo = {}        # entry name => [block param name, ...] | nil
+      @source_ast_memo = {}   # ruby source uri => parsed Prism AST | nil
 
       # Buffer layer (T7): per-uri harvested entries from open docs. Consulted
       # FIRST — buffer always wins. order_key ranks uris by mruby's compile order
@@ -723,6 +727,70 @@ module MrubyLsp
       return entry.params unless entry.kind == :method
 
       c_signature(entry) || entry.params
+    end
+
+    # The names a method gives its block, read from the method's OWN source -- its
+    # `yield` / block-call in Ruby, or mrb_yield / mrb_funcall in C (see
+    # BlockParams). -> ["a", "b"] | nil (doesn't yield, or yields nothing
+    # nameable). Drives the block-scaffold completion. Lazy + memoized per method;
+    # the source is the truth, exactly like c_signature is for parameters.
+    def yield_params(entry)
+      return nil unless entry.respond_to?(:kind) && entry.kind == :method
+
+      @memo_mutex.synchronize do
+        key = entry.name
+        return @yield_memo[key] if @yield_memo.key?(key)
+
+        @yield_memo[key] = compute_yield_params(entry)
+      end
+    end
+
+    def compute_yield_params(entry)
+      # C method: read its mrb_yield / mrb_funcall via clangd, like c_signature.
+      if @ctype_resolver && entry.respond_to?(:cfunc_offset) && entry.cfunc_offset && @native_resolver
+        info = (@enrich_memo[entry.cfunc_offset] ||= @native_resolver.resolve(entry.cfunc_offset))
+        return info && @ctype_resolver.yield_args(info[:file], info[:func])
+      end
+      # Ruby method: parse its source file, find the def, read its block-call.
+      ruby_yield_params(entry)
+    end
+
+    # The source is the file:// .rb the VM recorded (mrblib / project file) or a
+    # SAVED open buffer; unsaved buffer edits to the yielding method aren't seen.
+    def ruby_yield_params(entry)
+      uri = entry.uri
+      return nil unless uri&.start_with?("file://") && uri.end_with?(".rb")
+
+      ast = source_ast(uri) or return nil
+      def_node = find_def(ast, entry.line, method_name(entry.name)) or return nil
+      BlockParams.from_ruby(def_node)
+    end
+
+    def source_ast(uri)
+      return @source_ast_memo[uri] if @source_ast_memo.key?(uri)
+
+      @source_ast_memo[uri] =
+        begin
+          path = uri.sub(%r{\Afile://}, "")
+          File.file?(path) ? Prism.parse(File.read(path)).value : nil
+        rescue StandardError
+          nil
+        end
+    end
+
+    # The DefNode named meth, preferring the one starting on `line` (the
+    # VM-recorded def line), else the first by that name.
+    def find_def(ast, line, meth)
+      matches = []
+      stack = [ast]
+      until stack.empty?
+        node = stack.shift
+        next unless node.is_a?(Prism::Node)
+
+        matches << node if node.is_a?(Prism::DefNode) && node.name.to_s == meth
+        stack.concat(node.compact_child_nodes)
+      end
+      (line && matches.find { |d| d.location.start_line == line }) || matches.first
     end
 
     # All entries of a variable kind (:ivar/:cvar/:gvar), optionally owner-scoped.

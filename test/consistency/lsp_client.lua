@@ -18,7 +18,8 @@ function M.fail(msg) M.out(msg); vim.cmd("cq") end
 -- Write the fixture and start the server; returns client_id and bufnr with the
 -- buffer attached. A trusting editor answers the unsandboxed-consent dialog
 -- (Landlock is unavailable here), exactly as VS Code's trust flow would.
-function M.start(lines)
+function M.start(lines, opts)
+  opts = opts or {}
   vim.fn.writefile(lines, M.ws .. "/t.rb")
 
   vim.lsp.handlers["window/showMessageRequest"] = function(_, result)
@@ -33,6 +34,14 @@ function M.start(lines)
   vim.lsp.handlers["window/logMessage"] = function() return vim.NIL end
   vim.o.swapfile = false
 
+  -- opts.snippets advertises completionItem.snippetSupport, so the server emits
+  -- the tab-stop scaffolds (it gates them on this capability).
+  local caps
+  if opts.snippets then
+    caps = vim.lsp.protocol.make_client_capabilities()
+    caps.textDocument.completion.completionItem.snippetSupport = true
+  end
+
   local id = vim.lsp.start_client({
     name = "mruby-lsp",
     cmd = { "ruby", "-Ilib", "-r", "mruby_lsp/cli",
@@ -42,6 +51,7 @@ function M.start(lines)
                 MRUBY_LSP_CLANGD = os.getenv("MRUBY_LSP_CLANGD") or "/usr/bin/clangd",
                 PATH = os.getenv("PATH"), HOME = os.getenv("HOME") },
     root_dir = M.ws,
+    capabilities = caps,
   })
   if not id then M.fail("failed to start client") end
 
