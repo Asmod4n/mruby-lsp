@@ -3,6 +3,7 @@
 require_relative "c_return_type"
 require_relative "inline_type"
 require_relative "param_format"
+require_relative "block_params"
 
 module MrubyLsp
   # C-symbol gateway to our managed clangd, keyed by (source file + function
@@ -33,6 +34,7 @@ module MrubyLsp
       @types   = {} # [file, func] => class | RECEIVER | nil       (per-function memo)
       @docs    = {} # [file, func] => String | nil                (per-function memo)
       @params  = {} # [file, func] => [[kind,name],...] | nil      (per-function memo)
+      @yields  = {} # [file, func] => [name,...] | nil            (per-function memo)
       @helpers = {} # [file, func] => classify result             (interproc. memo + cycle guard)
     end
 
@@ -61,6 +63,16 @@ module MrubyLsp
       @params[key] = compute_arg_specs(file, func)
     end
 
+    # The block parameter NAMES of a C method, read from what it hands its block
+    # (mrb_yield / mrb_funcall on the captured block var -- see BlockParams). ->
+    # [name, ...] or nil. Lazy + memoized per function, like arg_specs.
+    def yield_args(file, func)
+      return nil unless alive? && file && func
+      key = [file, func]
+      return @yields[key] if @yields.key?(key)
+      @yields[key] = BlockParams.from_c(function_body(file, func))
+    end
+
     # file: absolute C source path; func: the C function name. -> class | nil.
     def resolve(file, func)
       return nil unless alive? && file && func
@@ -71,17 +83,21 @@ module MrubyLsp
 
     private
 
-    def compute_arg_specs(file, func)
+    # THIS function's body text, bounded to clangd's symbol range so a scan never
+    # picks up a neighbour's call. nil when clangd can't place the function.
+    def function_body(file, func)
       rng = ranges_for(file)&.dig(func, :range)
       return nil unless rng
       lines = source_lines(file)
       return nil unless lines
-      # Bound the scan to THIS function's body (clangd's symbol range), so a
-      # function with no mrb_get_args doesn't pick up the next function's call.
       a = rng.dig(:start, :line)
       b = rng.dig(:end, :line) || a
       return nil unless a
-      body = lines[a..b]&.join("\n") or return nil
+      lines[a..b]&.join("\n")
+    end
+
+    def compute_arg_specs(file, func)
+      body = function_body(file, func) or return nil
       GetArgs.specs(body)
     end
 

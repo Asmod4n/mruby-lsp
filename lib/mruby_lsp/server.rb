@@ -270,7 +270,14 @@ module MrubyLsp
       doc = @mutex.synchronize { @store.get(uri) }
       return { isIncomplete: false, items: [] } unless doc
 
-      { isIncomplete: false, items: Completion.items(doc, position, @index) }
+      { isIncomplete: false, items: Completion.items(doc, position, @index, snippets: snippet_support?) }
+    end
+
+    # Does the client render snippet completion items (tab-stop templates)? A
+    # CLIENT capability — emitting insertTextFormat:2 to a client without it
+    # inserts the raw `${1:..}`, so keyword scaffolds are gated on it.
+    def snippet_support?
+      @client_capabilities.to_h.dig(:textDocument, :completion, :completionItem, :snippetSupport) ? true : false
     end
 
     # Lazy per-item documentation, ruby-lsp semantics (CompletionResolve):

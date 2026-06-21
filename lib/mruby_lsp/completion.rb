@@ -23,12 +23,41 @@ module MrubyLsp
     KIND_CLASS    = 7
     KIND_MODULE   = 9
     KIND_CONSTANT = 21
+    KIND_SNIPPET  = 15
+
+    # LSP InsertTextFormat.Snippet: the newText is a tab-stop TEMPLATE, not
+    # literal text. Only ever emitted when the client advertised snippetSupport
+    # (checked server-side) -- otherwise a client would insert the raw `${1:..}`.
+    SNIPPET_FORMAT = 2
+
+    # Scaffolds offered as completion items, so you can type a few letters and get
+    # the whole idiomatic form with the cursor already where you fill it in.
+    # Emitting them from the SERVER (not an editor-specific snippets file) means
+    # every snippet-capable editor gets them from one place. Bodies use the LSP
+    # snippet grammar: ${1:placeholder} tab stops in order, $0 the final cursor;
+    # the punctuation an idiom needs (the `:` on a symbol, the `,` between alias
+    # names) is pre-filled so you never type it. Indentation is relative -- the
+    # client re-indents to the insertion column. The `class` body is how an mruby
+    # class is normally written: a named class with an initialize.
+    SNIPPETS = {
+      "class"         => "class ${1:Name}\n  def initialize($2)\n    $0\n  end\nend",
+      "module"        => "module ${1:Name}\n  $0\nend",
+      "def"           => "def ${1:name}($2)\n  $0\nend",
+      "initialize"    => "def initialize($1)\n  $0\nend",
+      "attr_reader"   => "attr_reader :${1:name}",
+      "attr_writer"   => "attr_writer :${1:name}",
+      "attr_accessor" => "attr_accessor :${1:name}",
+      "alias_method"  => "alias_method :${1:new_name}, :${2:old_name}",
+      "include"       => "include ${1:Module}",
+      "prepend"       => "prepend ${1:Module}",
+      "extend"        => "extend ${1:Module}",
+    }.freeze
 
     # Universal receivers whose methods are the low-priority floor.
     UNIVERSAL = %w[Object Kernel BasicObject].freeze
     UNIVERSAL_SINGLETON = %w[Module Class Object Kernel BasicObject].freeze
 
-    def items(document, position, index)
+    def items(document, position, index, snippets: false)
       result = Locator.locate(document.ast.value, document.text, position)
       return [] unless result&.node
 
@@ -50,7 +79,8 @@ module MrubyLsp
         variable_items(:gvar, node.name.to_s, result.nesting, index, range)
       when Prism::CallNode
         cursor = Locator.position_to_byte_offset(document.text, position)
-        call_items(node, index, range, result.nesting || [], document, cursor, sclass: result.sclass)
+        call_items(node, index, range, result.nesting || [], document, cursor,
+                   sclass: result.sclass, snippets: snippets)
       else
         # A lone sigil (`@`, `@@`, `$`) parses to nothing useful under error
         # recovery; the trigger characters still fire a request. Dispatch on the
@@ -142,7 +172,7 @@ module MrubyLsp
 
     # ── methods: ranked by ancestor-hop distance ──────────────────────────────
 
-    def call_items(node, index, range = nil, nesting = [], document = nil, cursor = nil, sclass: false)
+    def call_items(node, index, range = nil, nesting = [], document = nil, cursor = nil, sclass: false, snippets: false)
       prefix = node.message.nil? ? "" : node.name.to_s
       if cursor && node.message_loc &&
          !(cursor > node.message_loc.start_offset && cursor <= node.message_loc.end_offset)
@@ -232,10 +262,87 @@ module MrubyLsp
       # compar.rb, class.c" for ==) -- the redefinition reality in the LIST.
       anchor = klass || rank_owner
       sep = klass ? "." : "#"
-      local_names.map { |n| local_item(n, range) } +
+      out = local_names.map { |n| local_item(n, range) } +
         ranked.sort_by { |tier, e| [tier, sub_tier(e), method_name(e.name)] }
               .map { |tier, e| method_item(e, tier, range, files: definer_files(anchor, e, sep, index),
                                            params: index.display_params(e)) }
+      # Block scaffolds for a matching method that yields (`each do |item| …
+      # end`), the param names read from the method's own source. Empty prefix (a
+      # bare `recv.`) would flood the list, so require a typed prefix.
+      out += block_snippet_items(matching, index, range) if snippets && !prefix.empty?
+      # Keyword scaffolds, only for a bare (receiverless) prefix -- never after a
+      # `.`, where `class`/`def` are real method names, not statements.
+      out += snippet_items(prefix, range) if snippets && recv.nil?
+      out
+    end
+
+    # One scaffold per SNIPPETS keyword the prefix is a prefix of; the partial
+    # keyword (range) is replaced by the template. Nothing on an empty prefix --
+    # scaffolds surface as you type a keyword, not in an untouched buffer.
+    def snippet_items(prefix, range)
+      return [] if prefix.empty?
+
+      SNIPPETS.filter_map { |kw, body| snippet_item(kw, body, range) if kw.start_with?(prefix) }
+    end
+
+    # kind 15 = Snippet; insertTextFormat 2 marks newText as a tab-stop template.
+    # sortText "07_" groups scaffolds below a receiver's own/near methods but
+    # above the universal Object/Kernel floor. textEdit replaces the partial
+    # keyword span; without a range the client inserts at the cursor.
+    def snippet_item(name, body, range)
+      item = {
+        label: name,
+        labelDetails: { description: "snippet" },
+        kind: KIND_SNIPPET,
+        insertTextFormat: SNIPPET_FORMAT,
+        filterText: name,
+        sortText: "07_#{name}",
+      }
+      if range
+        item[:textEdit] = { range: range, newText: body }
+      else
+        item[:insertText] = body
+      end
+      item
+    end
+
+    # Block scaffolds for the matching methods that actually yield -- one per
+    # method (deduped by short name). The block parameter names are read from the
+    # method's OWN source -- its `yield` / block-call, in Ruby OR C -- via the
+    # index, so we suggest the names the method itself uses, never a guess. A
+    # method we can't prove yields nameable values gets no block scaffold.
+    def block_snippet_items(entries, index, range)
+      seen = {}
+      entries.filter_map do |e|
+        meth = method_name(e.name)
+        next if seen[meth]
+
+        names = index.yield_params(e) or next
+        seen[meth] = true
+        block_snippet_item(meth, names.join(", "), range)
+      end
+    end
+
+    # `meth do |params|\n  $0\nend`, replacing the partial method token. Labelled
+    # with the plain method name plus a " do |params| … end" detail and a "block"
+    # tag, so it reads distinctly from the bare method. sortText "06_" puts block
+    # forms just above the keyword scaffolds.
+    def block_snippet_item(meth, params, range)
+      body = "#{meth} do |#{params}|\n  $0\nend"
+      item = {
+        label: meth,
+        labelDetails: { detail: " do |#{params}| … end", description: "block" },
+        kind: KIND_SNIPPET,
+        insertTextFormat: SNIPPET_FORMAT,
+        filterText: meth,
+        sortText: "06_#{meth}",
+      }
+      if range
+        item[:textEdit] = { range: range, newText: body }
+      else
+        item[:insertText] = body
+      end
+      item
     end
 
     # Local variables (incl. def/block params) visible at the cursor: collect
