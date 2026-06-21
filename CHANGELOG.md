@@ -33,9 +33,10 @@ what mruby "usually" has.
   `include`/`prepend`/`extend` — with punctuation pre-filled and tab stops on the
   holes. After a receiver, block scaffolds (`each do |…|`) carry block-parameter
   names READ FROM the method's own source: `yield` / block-call in Ruby;
-  `mrb_yield` / `mrb_funcall` in C, tracking the `mrb_get_args` `&` block value
-  (the argv-family forms carry no per-value name → no scaffold rather than a
-  guess). Emitted only to clients that advertise `snippetSupport`.
+  `mrb_yield` / `mrb_funcall` in C, tracking the `mrb_get_args` `&` block value. A
+  yielded value with no name (`each` yields `self[idx]`, or an argv-family yield)
+  becomes an editable `${1:item}` placeholder, never a guessed name. Emitted only
+  to clients that advertise `snippetSupport`.
 
 ### Debugging
 - F5 debugging of `.rb`/`.mrb` via the user's own `mrdb` over the Debug Adapter

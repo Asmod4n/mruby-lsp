@@ -56,8 +56,9 @@ inlay hints, folding, and selection ranges.
 cursor on the first hole. After a receiver you also get block forms (`coll.each`
 → `each do |…|`) whose parameter names are **read from the method's own source** —
 its `yield`/`block.call` in Ruby, `mrb_yield`/`mrb_funcall` in C (tracking the
-captured block value) — never guessed. Emitted only to editors that advertise
-snippet support.
+captured block value). Where a yielded value has no name in the source (`each`
+yields `self[idx]`), you get an editable `${1:item}` placeholder, never a guessed
+name. Emitted only to editors that advertise snippet support.
 
 **Unsaved edits count immediately.** Classes and methods you're typing right now —
 `include`/`prepend`/`extend`, `attr_*`, `alias`, visibility changes, even
@@ -65,9 +66,11 @@ snippet support.
 mruby's real semantics. After a rebuild the VM catches up and the overlay shrinks
 to whatever is still unsaved.
 
-**Pin a type when you want to.** mruby-lsp infers types from your build, but you
-can state a method's types with an RBS-style comment on the line directly above
-it — a hand-written annotation always wins over inference. Use `#:` in Ruby
+**Pin a type when you want to.** mruby-lsp infers types from your build —
+assignments, `Foo.new`, and even C constructors that hand back a fresh instance
+of their receiver (`IO.for_fd` → `IO`, read from the clangd AST) — but you can
+state a method's types with an RBS-style comment on the line directly above it,
+and a hand-written annotation always wins over inference. Use `#:` in Ruby
 source and `//:` in C source; both take RBS method-type syntax (parsed by the
 `rbs` gem):
 
@@ -106,18 +109,24 @@ you're typing right now takes effect immediately, shadowing the compiled build.
 
 - **Ruby ≥ 3.0** on your machine (the server runs on host Ruby).
 - A **C toolchain**: `gcc`, `make`, `git`.
-- **`binutils`** (`addr2line`, `nm`) — used to jump into C source for built-ins.
-- **`clangd`** (optional, recommended) — powers C return-type inference and C
-  doc comments on hover. It's BYO; without it those two C features switch off
-  and everything else keeps working (C return types fall back to what your test
-  suite reveals). You do **not** need to symlink or rename anything: the server
-  discovers it automatically — a plain `clangd`, a versioned `clangd-NN` (it
-  picks the highest, e.g. `clangd-22`), a clangd next to your `clang`, or one
-  under an LLVM/Homebrew dir. Set `MRUBY_LSP_CLANGD` to a path to override.
-  Install:
+- **`binutils`** (`addr2line`, `nm`) — used to jump into C source for built-ins
+  (Linux/BSD; on macOS/Windows the C-source features are off — see Limitations).
+- **`clangd`** (optional, recommended) — powers the C-source half of several
+  features: C return-type inference, C doc comments on hover, the **real
+  parameter names** in C-method signatures (parsed from `mrb_get_args`), and the
+  **block-parameter names** in block scaffolds (from `mrb_yield`/`mrb_funcall`).
+  It's BYO; without it those degrade gracefully — C signatures fall back to
+  `arg1, arg2…`, C block scaffolds drop out, C return types fall back to what your
+  test suite reveals, C docs are absent — and everything else keeps working.
+  (These C-source features are Linux/BSD only for now; see Limitations.) You do
+  **not** need to symlink or rename anything: the server discovers it
+  automatically — a plain `clangd`, a versioned `clangd-NN` (it picks the highest,
+  e.g. `clangd-22`), a clangd next to your `clang`, or one under an LLVM/Homebrew
+  dir. Set `MRUBY_LSP_CLANGD` to a path to override. Install:
   - Arch / CachyOS: `sudo pacman -S clang`
   - Debian / Ubuntu: `sudo apt install clangd` (or `clangd-NN`)
   - Fedora: `sudo dnf install clang-tools-extra`
+  - FreeBSD: in the base system (`clang`), or `pkg install llvm`
   - openSUSE: `sudo zypper install clang-tools` (ships a versioned `clangd-NN`;
     discovery finds it, no symlink needed)
   - macOS: `brew install llvm` (discovery checks the Homebrew LLVM dir even if
@@ -140,7 +149,8 @@ git clone --recursive https://github.com/Asmod4n/mruby-lsp
 cd mruby-lsp
 ```
 
-**VS Code / VSCodium** — one command (needs the `code`/`codium` CLI on PATH):
+**VS Code / VSCodium** (also VSCode-OSS and code-server) — one command (needs one
+of `codium`/`code`/`code-oss`/`code-server` on PATH):
 
 ```bash
 rake vscode:install
@@ -264,11 +274,12 @@ process. For that, use `gdb`/`lldb` on the binary directly.
 **Go-to-definition into C doesn't land.** You need `binutils` (`addr2line`, `nm`)
 installed; setup's parallel build adds the debug info the jump relies on.
 
-**C methods show no return type / no C docs.** Install `clangd` (see
-[Requirements](#requirements)) — those two C features are off without it; the
-rest is unaffected. A versioned `clangd-NN` is fine (no symlink needed); the
-server finds the highest one. If yours sits somewhere unusual, point
-`MRUBY_LSP_CLANGD` at it.
+**C signatures show `arg1, arg2`, or no return type / no C docs / no C block
+scaffold.** These C-source features need `clangd` (see
+[Requirements](#requirements)) — without it they degrade and the rest is
+unaffected. A versioned `clangd-NN` is fine (no symlink needed); the server finds
+the highest one. If yours sits somewhere unusual, point `MRUBY_LSP_CLANGD` at it.
+(On macOS/Windows these are off regardless — see Limitations.)
 
 **VS Code: opening the project does nothing.** The extension activates on a folder
 containing `include/mruby.h` and only acts once the workspace is trusted.
@@ -296,6 +307,13 @@ selection ranges, document highlight, diagnostics). Where it differs, it differs
   ≤ 4.0.0 crash VM reflection on startup.
 - **The Linux sandbox needs Landlock**; on other platforms the launcher is a
   pass-through (no confinement) — see [Development](#development).
+- **C-source features are Linux/BSD only** right now: go-to-definition into C, C
+  return types, C doc comments, C parameter names, and C block scaffolds all map a
+  compiled method back to its `.c` source via an `addr2line`-shaped symbolizer.
+  That covers ELF (Linux and the BSDs — `llvm-addr2line`/`llvm-nm`), but the macOS
+  Mach-O path (`.dSYM`/`atos`) and Windows aren't wired yet, so those C features
+  stay off there. Everything else (the whole Ruby/VM side) works on every
+  platform.
 
 ## Updating
 
@@ -343,9 +361,10 @@ names); it picks its role from its own basename via `/proc/self/exe` and execs
 Ruby on the gem's CLI dispatcher (`lib/mruby_lsp/cli.rb`), handing it the role
 (`server`, `setup`, `update`) — there is no per-command binstub. The environment
 steers nothing — no env var widens the allow-list, redirects the target, or
-toggles a step. The sandbox runs on every Linux launch and degrades gracefully if
-Landlock isn't available — there is no opt-out. See
-`docs/design/SANDBOX-CROSSPLATFORM.md`.
+toggles a step. The sandbox runs on every Linux launch; there is no env opt-out.
+If the kernel lacks Landlock it does **not** silently run unconfined — it asks for
+your explicit consent (a `window/showMessageRequest` dialog) and shuts down if you
+decline. See `docs/design/SANDBOX-CROSSPLATFORM.md`.
 
 Start with `AGENTS.md` (orientation), then `docs/` for the architecture notes;
 read `docs/GOTCHAS.md` before changing native or build code — it's the project's
