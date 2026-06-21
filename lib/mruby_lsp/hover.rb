@@ -56,10 +56,10 @@ module MrubyLsp
       # back to the editor language (Ruby), syntax-coloring the comment and
       # collapsing it; `code` forces a plain, uncolored, line-preserving block.
       entries = entries.map do |e|
-        # Prefer the C method's REAL parameter names (parsed from mrb_get_args
-        # via clangd) over the aspec's argN placeholders. nil for Ruby methods or
-        # an unparseable call -> keep the existing signature.
-        e = e.with(params: index.c_signature(e) || e.params) if e.kind == :method
+        # The displayed signature comes from the shared seam (real C names when
+        # resolvable, else the aspec-derived params) -- the SAME params completion
+        # and signatureHelp render, so hover can never disagree with them.
+        e = e.with(params: index.display_params(e)) if e.kind == :method
         next e unless e.doc.to_s.empty?
         cdoc = index.c_doc(e)
         cdoc ? e.with(doc: "```code\n#{cdoc}\n```") : e

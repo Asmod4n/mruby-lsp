@@ -165,6 +165,5 @@ module MrubyLsp
       }
     end
 
-    def method_name(qualified) = qualified.split("#", 2).last
   end
 end

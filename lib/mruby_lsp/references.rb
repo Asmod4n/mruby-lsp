@@ -36,7 +36,7 @@ module MrubyLsp
         next unless DocumentHighlight.node_value(node) == name
         loc = DocumentHighlight.highlight_loc(node)
         next unless loc
-        r = range_of(loc)
+        r = Locator.range_of(loc)
         key = [r[:start][:line], r[:start][:character], r[:end][:line], r[:end][:character]]
         next if seen[key]
         seen[key] = true
@@ -55,7 +55,7 @@ module MrubyLsp
         next unless DocumentHighlight.node_value(node) == name
         loc = DocumentHighlight.highlight_loc(node)
         next unless loc
-        r = range_of(loc)
+        r = Locator.range_of(loc)
         keys[[r[:start][:line], r[:start][:character], r[:end][:line], r[:end][:character]]] = true
       end
       keys
@@ -75,13 +75,6 @@ module MrubyLsp
         node.is_a?(Prism::ConstantWriteNode) ||
         node.is_a?(Prism::RequiredParameterNode) ||
         node.is_a?(Prism::OptionalParameterNode)
-    end
-
-    def range_of(loc)
-      {
-        start: { line: loc.start_line - 1, character: loc.start_code_units_column(Locator.code_units_encoding) },
-        end:   { line: loc.end_line - 1, character: loc.end_code_units_column(Locator.code_units_encoding) }
-      }
     end
   end
 end

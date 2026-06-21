@@ -78,6 +78,13 @@ The conformance + parity suites (`test/conformance/README.md`,
 `test/parity/README.md`) need a built reflection VM and, for parity, ruby-lsp
 built from source; both READMEs document the procedure.
 
+`test/consistency/` asserts that the SAME question answered through different
+endpoints (completion / hover / signatureHelp / definition / references /
+documentHighlight / rename) yields the SAME logical fact — formatting differs by
+design, the facts must not. It is driven by a REAL LSP client (Neovim's built-in
+`vim.lsp`) against the real server, so it needs a built reflection VM + clangd;
+see `test/consistency/README.md`.
+
 ## House rules (non-negotiable)
 
 - **Verify by running.** Drive the server over real LSP stdio; static inspection

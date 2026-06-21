@@ -698,8 +698,9 @@ module MrubyLsp
     # function's mrb_get_args call via clangd (lazy, memoized per offset). nil ->
     # not a C method, no parseable mrb_get_args, or clangd off; the caller then
     # falls back to entry.params (the aspec-derived, argN-placeholder signature).
-    # Single-method cost, so reserved for hover / signatureHelp -- the completion
-    # LIST keeps using the cheap pre-rendered entry.params.
+    # Single-method cost (one clangd documentSymbol per C file, then memoized),
+    # reached only through display_params -- the ONE seam every feature renders
+    # parameters through, so none of them can disagree on a method's signature.
     def c_signature(entry)
       return nil unless @ctype_resolver
       return nil unless entry.respond_to?(:cfunc_offset) && entry.cfunc_offset && @native_resolver
@@ -710,6 +711,18 @@ module MrubyLsp
         specs = info && @ctype_resolver.arg_specs(info[:file], info[:func])
         @csig_memo[off] = specs && ParamFormat.render(specs)
       end
+    end
+
+    # The parameter signature a feature should DISPLAY for an entry: a C method's
+    # REAL names (mrb_get_args, via c_signature) when resolvable, else the
+    # aspec-derived entry.params. The single source of truth for "what params do
+    # we show", shared by hover, signatureHelp, AND completion, so the same
+    # method never renders one way in the completion list and another on hover.
+    # Non-method entries carry no signature -- their params pass through.
+    def display_params(entry)
+      return entry.params unless entry.kind == :method
+
+      c_signature(entry) || entry.params
     end
 
     # All entries of a variable kind (:ivar/:cvar/:gvar), optionally owner-scoped.
