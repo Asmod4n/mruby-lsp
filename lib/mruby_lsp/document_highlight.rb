@@ -113,8 +113,8 @@ module MrubyLsp
         en = node.respond_to?(end_m) ? node.public_send(end_m) : nil
         next unless kw && en && en.length.positive?
         next unless covers?(kw, position) || covers?(en, position)
-        out << { range: range_of(kw), kind: TEXT }
-        out << { range: range_of(en), kind: TEXT }
+        out << { range: Locator.range_of(kw), kind: TEXT }
+        out << { range: Locator.range_of(en), kind: TEXT }
       end
       out
     end
@@ -127,7 +127,7 @@ module MrubyLsp
         next unless node_value(node) == value
         loc = highlight_loc(node)
         next unless loc
-        out << { range: range_of(loc), kind: write?(node) ? WRITE : READ }
+        out << { range: Locator.range_of(loc), kind: write?(node) ? WRITE : READ }
       end
       out
     end
@@ -207,13 +207,6 @@ module MrubyLsp
       return false if line == sl && col < loc.start_code_units_column(Locator.code_units_encoding)
       return false if line == el && col > loc.end_code_units_column(Locator.code_units_encoding)
       true
-    end
-
-    def range_of(loc)
-      {
-        start: { line: loc.start_line - 1, character: loc.start_code_units_column(Locator.code_units_encoding) },
-        end:   { line: loc.end_line - 1, character: loc.end_code_units_column(Locator.code_units_encoding) }
-      }
     end
   end
 end

@@ -28,20 +28,13 @@ module MrubyLsp
       until queue.empty?
         node, parent = queue.shift
         next unless node
-        range = { range: range_of(node.location) }
+        range = { range: Locator.range_of(node.location) }
         range[:parent] = parent if parent # outermost has NO parent key
         children = node.child_nodes.map { |c| [c, range] }
         queue.unshift(*children)
         ranges.unshift(range)
       end
       ranges
-    end
-
-    def range_of(loc)
-      {
-        start: { line: loc.start_line - 1, character: loc.start_code_units_column(Locator.code_units_encoding) },
-        end:   { line: loc.end_line - 1, character: loc.end_code_units_column(Locator.code_units_encoding) }
-      }
     end
 
     # position covered by [start, end) inclusive of start, ruby-lsp uses

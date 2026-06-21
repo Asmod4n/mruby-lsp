@@ -71,8 +71,8 @@ module MrubyLsp
           name: child.split("::").last,
           kind: CLASS,
           uri: document.uri,
-          range: range_of(loc),
-          selectionRange: range_of(loc)
+          range: Locator.range_of(loc),
+          selectionRange: Locator.range_of(loc)
         }
       end
     end
@@ -101,13 +101,6 @@ module MrubyLsp
 
     def zero_range
       { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }
-    end
-
-    def range_of(loc)
-      {
-        start: { line: loc.start_line - 1, character: loc.start_code_units_column(Locator.code_units_encoding) },
-        end:   { line: loc.end_line - 1, character: loc.end_code_units_column(Locator.code_units_encoding) }
-      }
     end
 
     def constant_name(node)

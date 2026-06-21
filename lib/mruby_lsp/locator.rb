@@ -121,5 +121,17 @@ module MrubyLsp
       prefix = utf16.bytes.first(units * 2).pack("C*").force_encoding("UTF-16LE")
       prefix.encode("UTF-8").bytesize
     end
+
+    # A Prism location -> an LSP Range: 0-based lines, columns in the negotiated
+    # position encoding (code units). The one converter every range-emitting
+    # feature (documentHighlight, references, rename, document/workspace symbols,
+    # type hierarchy, selection range) shares, so they cannot disagree on how a
+    # source span maps to LSP coordinates.
+    def range_of(loc)
+      {
+        start: { line: loc.start_line - 1, character: loc.start_code_units_column(code_units_encoding) },
+        end:   { line: loc.end_line - 1, character: loc.end_code_units_column(code_units_encoding) }
+      }
+    end
   end
 end

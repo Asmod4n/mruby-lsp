@@ -160,19 +160,12 @@ module MrubyLsp
       sym = {
         name: name,
         kind: kind,
-        range: range_of(range_loc),
-        selectionRange: range_of(sel_loc),
+        range: Locator.range_of(range_loc),
+        selectionRange: Locator.range_of(sel_loc),
         children: []
       }
       stack.last[:children] << sym
       sym
-    end
-
-    def range_of(loc)
-      {
-        start: { line: loc.start_line - 1, character: loc.start_code_units_column(Locator.code_units_encoding) },
-        end:   { line: loc.end_line - 1, character: loc.end_code_units_column(Locator.code_units_encoding) }
-      }
     end
 
     def class_path_name(const_node)
