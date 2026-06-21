@@ -309,29 +309,38 @@ module MrubyLsp
     # Block scaffolds for the matching methods that actually yield -- one per
     # method (deduped by short name). The block parameter names are read from the
     # method's OWN source -- its `yield` / block-call, in Ruby OR C -- via the
-    # index, so we suggest the names the method itself uses, never a guess. A
-    # method we can't prove yields nameable values gets no block scaffold.
+    # index, so we suggest the names the method itself uses. `nil` means the
+    # method doesn't yield (no scaffold); an array (possibly with nil holes for
+    # un-nameable yielded values) means it does.
     def block_snippet_items(entries, index, range)
       seen = {}
       entries.filter_map do |e|
         meth = method_name(e.name)
         next if seen[meth]
 
-        names = index.yield_params(e) or next
+        params = index.yield_params(e) or next
         seen[meth] = true
-        block_snippet_item(meth, names.join(", "), range)
+        block_snippet_item(meth, params, range)
       end
     end
 
-    # `meth do |params|\n  $0\nend`, replacing the partial method token. Labelled
-    # with the plain method name plus a " do |params| … end" detail and a "block"
-    # tag, so it reads distinctly from the bare method. sortText "06_" puts block
-    # forms just above the keyword scaffolds.
+    # `meth do |params|\n  $0\nend`, replacing the partial method token. params is
+    # the array from yield_params: a String is the source name (inserted plain); a
+    # nil is a value with no name in the source, rendered as an editable
+    # ${n:item} placeholder rather than a guessed name. An empty array yields a
+    # block with no `|params|`. Labelled with a " do |…| … end" detail and a
+    # "block" tag so it reads distinctly from the bare method; sortText "06_" puts
+    # block forms just above the keyword scaffolds.
     def block_snippet_item(meth, params, range)
-      body = "#{meth} do |#{params}|\n  $0\nend"
+      hole = 0
+      pipes = params.map { |name| name || "${#{hole += 1}:item}" }
+      shown = params.map { |name| name || "item" }
+      sig   = pipes.empty? ? "" : " |#{pipes.join(', ')}|"
+      body  = "#{meth} do#{sig}\n  $0\nend"
       item = {
         label: meth,
-        labelDetails: { detail: " do |#{params}| … end", description: "block" },
+        labelDetails: { detail: shown.empty? ? " do … end" : " do |#{shown.join(', ')}| … end",
+                        description: "block" },
         kind: KIND_SNIPPET,
         insertTextFormat: SNIPPET_FORMAT,
         filterText: meth,
