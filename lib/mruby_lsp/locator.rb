@@ -54,6 +54,14 @@ module MrubyLsp
         end_off = loc.end_offset
         next unless offset >= start_off && offset <= end_off
 
+        # Prism inserts a zero-ish-width MissingNode where it expected a node but
+        # the source is still being typed -- most visibly the last expression
+        # before a not-yet-typed `end` at EOF (`class Foo\n def x\n 15.times` ->
+        # the `15.times` slot becomes Missing). It would win the narrowest-node
+        # race and hand every feature (completion, hover, …) nothing instead of
+        # the real node it sits on, so skip it. It has no children to enqueue.
+        next if candidate.is_a?(Prism::MissingNode)
+
         # Track enclosing namespaces that cover the cursor.
         case candidate
         when Prism::ModuleNode, Prism::ClassNode
