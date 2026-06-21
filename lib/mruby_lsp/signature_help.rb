@@ -32,12 +32,12 @@ module MrubyLsp
       # ruby-lsp shows no signature help for a method with no parameters.
       overloads = overloads.select { |e| e.params && !e.params.empty? }
       return nil if overloads.empty?
-      # Lazy native docs for exactly the shown overloads (memoized). Also swap in
-      # the C method's real parameter names (mrb_get_args via clangd) when we can
-      # parse them; nil -> keep the aspec-derived signature.
+      # Lazy native docs for exactly the shown overloads (memoized). The displayed
+      # signature comes from the shared seam (real C names when resolvable, else
+      # the aspec-derived params) -- the SAME params hover and completion render.
       overloads = overloads.map do |e|
         e = index.enrich(e)
-        e.kind == :method ? e.with(params: index.c_signature(e) || e.params) : e
+        e.kind == :method ? e.with(params: index.display_params(e)) : e
       end
 
       active_sig = 0 # nearest MRO definition = the one that resolves/runs

@@ -234,7 +234,8 @@ module MrubyLsp
       sep = klass ? "." : "#"
       local_names.map { |n| local_item(n, range) } +
         ranked.sort_by { |tier, e| [tier, sub_tier(e), method_name(e.name)] }
-              .map { |tier, e| method_item(e, tier, range, files: definer_files(anchor, e, sep, index)) }
+              .map { |tier, e| method_item(e, tier, range, files: definer_files(anchor, e, sep, index),
+                                           params: index.display_params(e)) }
     end
 
     # Local variables (incl. def/block params) visible at the cursor: collect
@@ -329,11 +330,14 @@ module MrubyLsp
       files.empty? ? nil : files.join(", ")
     end
 
-    def method_item(entry, tier, range = nil, files: nil)
+    # params: the signature to show (Index#display_params -- real C names when
+    # resolvable, else entry.params), so the list matches hover/signatureHelp.
+    # Defaults to entry.params for callers that don't resolve it.
+    def method_item(entry, tier, range = nil, files: nil, params: nil)
       name = method_name(entry.name)
       item = {
         label: name,
-        labelDetails: { detail: entry.params, description: files || source_file(entry.uri) }.compact,
+        labelDetails: { detail: params || entry.params, description: files || source_file(entry.uri) }.compact,
         kind: KIND_METHOD,
         filterText: name,
         sortText: sort_text(tier, name, sub_tier(entry)),

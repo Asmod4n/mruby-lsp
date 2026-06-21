@@ -91,6 +91,15 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- Completion now shows a C method's **real parameter names** (`String#index` →
+  `(sub, pos = ...)`) instead of the aspec's `argN` placeholders, matching what
+  hover and signature help already showed. All three render their signature
+  through one seam (`Index#display_params`), so the same method can never read
+  `(arg1, arg2)` in the completion list and `(sub, pos)` on hover. The real names
+  come from `mrb_get_args` via clangd, resolved lazily and memoized; with clangd
+  absent the three fall back to the aspec form together. New real-LSP-client
+  consistency tests (`test/consistency/`) assert this agreement so it can't drift
+  again.
 - Install: the compiled launchers (`mruby-lsp` / `mruby-lsp-setup` /
   `mruby-lsp-update` / `mruby-lsp-nonet`) now go to `Gem.bindir` — the
   configured EXECUTABLE DIRECTORY (honors `--bindir`, user vs system install,
