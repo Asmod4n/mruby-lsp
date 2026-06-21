@@ -1,5 +1,3 @@
-Notice: The last commit changed how we track the build, you have to stash your changes so git pull works.
-This is only required once, after that it should work as you expect.
 # mruby-lsp
 
 **A language server for [mruby](https://mruby.org) that answers from your project's
