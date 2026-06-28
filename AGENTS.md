@@ -91,8 +91,7 @@ is incompatible with this premise.
 - **Author = the maintainer, not the agent.** Set the commit author to the repo
   owner's GitHub identity. Find it via the API instead of guessing:
   - Call the GitHub MCP tool `get_me` → it returns `login`, `id`, and
-    `details.name` (here: `Asmod4n`, `791770`, `Hendrik`). For someone else, use
-    `search_users`.
+    `details.name`
   - GitHub's privacy-preserving commit email is `<id>+<login>@users.noreply.
     github.com`. This is what GitHub
     attributes back to the account; do NOT invent a plain address.
