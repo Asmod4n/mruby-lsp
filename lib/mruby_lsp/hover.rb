@@ -184,6 +184,10 @@ module MrubyLsp
             TypeInference.infer_local(node.name, node.location.start_offset, document, index)
           end
         type ? resolve_constant(type, nesting, index) : []
+      when Prism::ItLocalVariableReadNode
+        # `it` (no name field): block param 0, typed like any other block param.
+        type = document && TypeInference.infer_local(:it, node.location.start_offset, document, index)
+        type ? resolve_constant(type, nesting, index) : []
       when Prism::CallNode
         meth = node.name.to_s
         if node.receiver

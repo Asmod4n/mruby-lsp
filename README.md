@@ -67,7 +67,10 @@ mruby's real semantics. After a rebuild the VM catches up and the overlay shrink
 to whatever is still unsaved.
 
 **Pin a type when you want to.** mruby-lsp infers types from your build —
-assignments, `Foo.new`, and even C constructors that hand back a fresh instance
+assignments, `Foo.new`, pattern-match captures (`in Integer => n`), block
+parameters (`[1, 2].each { |e| … }` types `e` from the literal; a method defined
+in your buffer types them from its own `yield`s), numbered params (`_1`), and
+even C constructors that hand back a fresh instance
 of their receiver (`IO.for_fd` → `IO`, read from the clangd AST) — but you can
 state a method's types with an RBS-style comment on the line directly above it,
 and a hand-written annotation always wins over inference. Use `#:` in Ruby

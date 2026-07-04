@@ -21,6 +21,11 @@ what mruby "usually" has.
   as you type, layered over the compiled VM with mruby's real semantics.
 - Type inference from the build, overridable by RBS-style `#:` (Ruby) and `//:`
   (C) annotations; declared instance-variable types via `mruby-native-ext-type`.
+  Locals born at **binding sites** type like assigned locals: pattern-match
+  captures (`in Integer => n`, `expr => x`, `*rest`/`**opts`), block parameters
+  (from a buffer def's own `yield`s, or a literal collection's element type for
+  core iterators — `[1, 2].each { |e| … }`, `{a: 1}.each { |k, v| … }`,
+  `5.times { |i| … }`), numbered params (`_1`), and `it`.
   C constructors that return a **fresh instance of their receiver class**
   (`IO.for_fd` → `IO`, `File.for_fd` → `File`) are inferred from the clangd AST —
   including when the fresh object is handed back through one or more helper

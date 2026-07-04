@@ -3,6 +3,7 @@
 require "prism"
 require_relative "inline_type"
 require_relative "c_return_type"
+require_relative "block_params"
 
 module MrubyLsp
   # Local-variable + method-return type inference. All paths funnel through
@@ -153,6 +154,14 @@ module MrubyLsp
       return nil if depth > MAX_DEPTH
       scope = enclosing_scope(document.ast.value, usage_offset)
       write = nearest_write(scope, name, usage_offset)
+      # A local can also be born at a BINDING SITE with no write node: a pattern
+      # capture (`in Integer => n`, `expr => x`) or a block parameter
+      # (`each do |e|`, `_1`, `it`). The latest of write-vs-binding wins, the
+      # same last-one-reaches rule writes already follow.
+      bind = nearest_binding(scope, name.to_sym, usage_offset, document, index, depth)
+      if bind && (write.nil? || write.location.end_offset < bind[0])
+        return bind[1]
+      end
       return type_of(write.value, document, index, depth + 1) if write && write.value
 
       # No assignment reaches this use, so `name` may be a method parameter. A
@@ -256,6 +265,292 @@ module MrubyLsp
       found
     end
 
+    # ---- binding sites: pattern captures + block parameters ------------------
+    # Locals born without a LocalVariableWriteNode. Same contract as everything
+    # else here: a bare class name when the AST proves it, nil otherwise.
+
+    # The latest binding site of `name` reaching usage_offset, as
+    # [site_offset, type-or-nil]; nil when no binding site binds this name.
+    # A binding counts from its START (a capture target sits inside its own
+    # pattern, a block param inside its block), unlike writes which must END
+    # before the use.
+    def nearest_binding(scope, name, usage_offset, document, index, depth)
+      best = nil
+      take = lambda do |off, hit|
+        best = [off, hit.first] if hit && (best.nil? || off >= best[0])
+      end
+      pruned_walk(scope) do |node|
+        case node
+        when Prism::CaseMatchNode
+          node.conditions.each do |cond|
+            next unless cond.is_a?(Prism::InNode)
+            pat = cond.pattern
+            next unless pat.location.start_offset <= usage_offset
+            take.call(pat.location.start_offset,
+                      pattern_binding(pat, name, node.predicate, document, index, depth))
+          end
+        when Prism::MatchRequiredNode, Prism::MatchPredicateNode
+          pat = node.pattern
+          next unless pat.location.start_offset <= usage_offset
+          take.call(pat.location.start_offset,
+                    pattern_binding(pat, name, node.value, document, index, depth))
+        when Prism::CallNode
+          blk = node.block
+          next unless blk.is_a?(Prism::BlockNode)
+          loc = blk.location
+          # A block param only exists inside its block (innermost block wins:
+          # a deeper block starts later, so `>=` in take prefers it).
+          next unless usage_offset >= loc.start_offset && usage_offset <= loc.end_offset
+          pos, arity = block_param_position(blk, name)
+          next unless pos
+          take.call(loc.start_offset,
+                    [yield_param_type(node, pos, arity, document, index, depth)])
+        end
+      end
+      best
+    end
+
+    # Does `pattern` bind `name`, and to what type? nil = does not bind;
+    # [type-or-nil] = binds (a one-element wrapper so "binds, type unknown"
+    # stays distinct from "does not bind"). `subject` is the matched
+    # expression's node when the pattern applies to it whole, nil once we
+    # descend into elements (their values are unknown).
+    def pattern_binding(pat, name, subject, document, index, depth)
+      case pat
+      when Prism::LocalVariableTargetNode
+        return unless pat.name == name
+        [subject ? type_of(subject, document, index, depth + 1) : nil]
+      when Prism::CapturePatternNode
+        # `<value pattern> => name`: matching proves the value satisfies the
+        # pattern, so the pattern itself types the capture.
+        if pat.target.is_a?(Prism::LocalVariableTargetNode) && pat.target.name == name
+          [pattern_value_type(pat.value, document, index, depth)]
+        else
+          pattern_binding(pat.value, name, subject, document, index, depth)
+        end
+      when Prism::ArrayPatternNode
+        pattern_element_binding([*pat.requireds, pat.rest, *pat.posts],
+                                name, document, index, depth)
+      when Prism::FindPatternNode
+        pattern_element_binding([pat.left, *pat.requireds, pat.right],
+                                name, document, index, depth)
+      when Prism::HashPatternNode
+        pattern_element_binding([*pat.elements.map { |e| e.is_a?(Prism::AssocNode) ? e.value : e },
+                                 pat.rest], name, document, index, depth)
+      when Prism::SplatNode
+        # `*rest` in an array/find pattern: binds the leftovers, always an Array.
+        t = pattern_binding(pat.expression, name, nil, document, index, depth)
+        t && ["Array"]
+      when Prism::AssocSplatNode
+        # `**rest` in a hash pattern: binds the leftovers, always a Hash.
+        t = pattern_binding(pat.value, name, nil, document, index, depth)
+        t && ["Hash"]
+      when Prism::ImplicitNode
+        # `in {name:}` shorthand: binds, but the value's type is unknown.
+        pattern_binding(pat.value, name, nil, document, index, depth)
+      when Prism::ParenthesesNode
+        pattern_binding(pat.body, name, subject, document, index, depth)
+      end
+      # AlternationPatternNode can't bind (Ruby forbids captures under `|`);
+      # pinned patterns don't bind; literal patterns bind nothing.
+    end
+
+    def pattern_element_binding(elements, name, document, index, depth)
+      elements.each do |el|
+        hit = el && pattern_binding(el, name, nil, document, index, depth)
+        return hit if hit
+      end
+      nil
+    end
+
+    # The class a capture's VALUE pattern proves about the captured value.
+    # `in Integer => n` -> the match IS the type test. Only pattern kinds whose
+    # match implies a single class map; everything else -> nil (never guess).
+    def pattern_value_type(value, document, index, depth)
+      case value
+      when Prism::ConstantReadNode, Prism::ConstantPathNode
+        # A value constant (HEX = "...") matches by ===/== -> the value's type;
+        # otherwise the constant IS the class test (`in Integer => n`).
+        infer_constant(value, document, index, depth) || Completion.basic_type(value)
+      when Prism::StringNode, Prism::InterpolatedStringNode then "String"
+      when Prism::RegularExpressionNode, Prism::InterpolatedRegularExpressionNode
+        "String" # a regexp pattern matches Strings, not Regexps
+      when Prism::SymbolNode  then "Symbol"
+      when Prism::IntegerNode then "Integer"
+      when Prism::FloatNode   then "Float"
+      when Prism::NilNode     then "NilClass"
+      when Prism::TrueNode    then "TrueClass"
+      when Prism::FalseNode   then "FalseClass"
+      when Prism::RangeNode
+        # `in 1..9 => n`: the range CONTAINS the value, so the value types like
+        # the endpoints, not like a Range.
+        range_element_type(value)
+      when Prism::ArrayPatternNode, Prism::FindPatternNode then "Array"
+      when Prism::HashPatternNode then "Hash"
+      when Prism::AlternationPatternNode
+        l = pattern_value_type(value.left, document, index, depth)
+        r = pattern_value_type(value.right, document, index, depth)
+        l == r ? l : nil
+      when Prism::PinnedVariableNode
+        type_of(value.variable, document, index, depth + 1)
+      when Prism::PinnedExpressionNode
+        type_of(value.expression, document, index, depth + 1)
+      end
+    end
+
+    # The single type of a LITERAL range's endpoints ((1..9) -> Integer), nil
+    # for mixed/non-literal/empty endpoints. Beginless/endless use the one
+    # present endpoint.
+    def range_element_type(node)
+      ts = [node.left, node.right].compact.map do |b|
+        case b
+        when Prism::IntegerNode then "Integer"
+        when Prism::FloatNode   then "Float"
+        when Prism::StringNode  then "String"
+        end
+      end
+      return nil if ts.empty? || ts.include?(nil)
+      ts.uniq.size == 1 ? ts.first : nil
+    end
+
+    # [position, arity] of `name` among a block's positional params, nil when
+    # the block doesn't bind it. Covers |a, b|, numbered (_1.._9), and `it`.
+    def block_param_position(block, name)
+      case (params = block.parameters)
+      when Prism::BlockParametersNode
+        reqs = params.parameters&.requireds || []
+        pos = reqs.index { |p| p.is_a?(Prism::RequiredParameterNode) && p.name == name }
+        pos && [pos, reqs.length]
+      when Prism::NumberedParametersNode
+        s = name.to_s # _1.._9; a hand scan, not a regex (hot path)
+        return nil unless s.length == 2 && s.start_with?("_") && s[1].between?("1", "9")
+        [s[1].to_i - 1, params.maximum]
+      when Prism::ItParametersNode
+        name == :it ? [0, 1] : nil
+      end
+    end
+
+    # The type a call yields to its block at `pos`. Stage 1 first: the called
+    # method is a def in this buffer -> the types it actually yields (all yield
+    # sites must agree, the infer_return rule). Otherwise the small set of core
+    # iterators whose element type the buffer itself proves (literal receivers,
+    # Integer/String receivers).
+    def yield_param_type(call, pos, arity, document, index, depth)
+      return nil if depth > MAX_DEPTH
+      defn = resolve_def(call, document, index, depth)
+      return yielded_type(defn, pos, document, index, depth) if defn
+      core_yield_type(call, pos, arity, document, index, depth)
+    end
+
+    def yielded_type(defn, pos, document, index, depth)
+      blk = defn.parameters&.block&.name&.to_s
+      yields = []
+      BlockParams.collect_yields(defn.body, blk, yields)
+      return nil if yields.empty?
+      types = yields.map { |args| args[pos] && type_of(args[pos], document, index, depth + 1) }.uniq
+      types.size == 1 ? types.first : nil
+    end
+
+    # Core iteration methods that yield the collection's ELEMENT first. These
+    # are mruby core semantics (mrblib/enum/array), not CRuby conventions; the
+    # element type still comes from the buffer's own literals -- an opaque
+    # receiver stays untyped.
+    ELEMENT_YIELDERS = %i[
+      each map collect select filter reject find detect find_all flat_map
+      sort_by min_by max_by sum take_while drop_while reverse_each delete_if
+      keep_if partition group_by count all? any? none? one?
+      each_with_index each_with_object each_entry
+    ].freeze
+    INTEGER_YIELDERS = %i[times upto downto step].freeze
+    STRING_YIELDERS  = { each_char: "String", each_line: "String", each_byte: "Integer" }.freeze
+
+    def core_yield_type(call, pos, arity, document, index, depth)
+      recv = call.receiver
+      return nil unless recv
+      meth = call.name
+      if meth == :each_with_object && pos == 1
+        # The memo object is this call's own argument -- receiver-independent.
+        arg = call.arguments&.arguments&.first
+        return arg && type_of(arg, document, index, depth + 1)
+      end
+      lit = literal_receiver(recv, document, index, depth)
+      case lit
+      when Prism::ArrayNode
+        return "Integer" if meth == :each_index && pos.zero?
+        return "Integer" if meth == :each_with_index && pos == 1
+        uniform_type(lit.elements, document, index, depth) if element_pos?(meth, pos)
+      when Prism::RangeNode
+        return "Integer" if meth == :each_with_index && pos == 1
+        range_element_type(lit) if element_pos?(meth, pos)
+      when Prism::HashNode
+        hash_yield_type(lit, meth, pos, arity, document, index, depth)
+      else
+        case type_of(recv, document, index, depth + 1)
+        when "Integer"
+          "Integer" if INTEGER_YIELDERS.include?(meth) && pos.zero?
+        when "String"
+          STRING_YIELDERS[meth] if pos.zero?
+        end
+      end
+    end
+
+    def element_pos?(meth, pos) = ELEMENT_YIELDERS.include?(meth) && pos.zero?
+
+    # Hash iteration: |k, v| types from the literal's keys/values; a one-param
+    # block gets the [k, v] pair -> Array. Keys and values type independently
+    # ({a: 1, b: 2} -> k Symbol, v Integer) and each must be uniform.
+    def hash_yield_type(hash, meth, pos, arity, document, index, depth)
+      return nil unless hash.elements.all? { |e| e.is_a?(Prism::AssocNode) }
+      # These yield the [k, v] PAIR first (plus index/memo), not k and v:
+      # h.each_with_index { |pair, i| }.
+      if meth == :each_with_index || meth == :each_with_object
+        return pos.zero? ? "Array" : (meth == :each_with_index && pos == 1 ? "Integer" : nil)
+      end
+      case meth
+      when :each_key
+        uniform_type(hash.elements.map(&:key), document, index, depth) if pos.zero?
+      when :each_value
+        uniform_type(hash.elements.map(&:value), document, index, depth) if pos.zero?
+      when :each_pair, *ELEMENT_YIELDERS
+        if arity >= 2
+          side = pos.zero? ? hash.elements.map(&:key) : (pos == 1 ? hash.elements.map(&:value) : nil)
+          side && uniform_type(side, document, index, depth)
+        elsif pos.zero?
+          "Array"
+        end
+      end
+    end
+
+    def uniform_type(nodes, document, index, depth)
+      return nil if nodes.empty?
+      types = nodes.map { |n| type_of(n, document, index, depth + 1) }.uniq
+      types.size == 1 ? types.first : nil
+    end
+
+    # Follow a receiver back to a literal collection node in this buffer:
+    # the literal itself, a local assigned one, or a value constant. nil when
+    # the trail leaves the buffer (never guess element types).
+    def literal_receiver(node, document, index, depth)
+      return nil if depth > MAX_DEPTH
+      case node
+      when Prism::ArrayNode, Prism::HashNode, Prism::RangeNode then node
+      when Prism::ParenthesesNode
+        # `(1..9).each` -- a range receiver is necessarily parenthesized.
+        b = node.body
+        if b.is_a?(Prism::StatementsNode) && b.body.length == 1
+          literal_receiver(b.body.first, document, index, depth + 1)
+        end
+      when Prism::LocalVariableReadNode
+        scope = enclosing_scope(document.ast.value, node.location.start_offset)
+        w = nearest_write(scope, node.name, node.location.start_offset)
+        w && w.value ? literal_receiver(w.value, document, index, depth + 1) : nil
+      when Prism::ConstantReadNode, Prism::ConstantPathNode
+        short = constant_short_name(node)
+        w = short && find_constant_write(document.ast.value, short)
+        w && w.value ? literal_receiver(w.value, document, index, depth + 1) : nil
+      end
+    end
+
     # ---- method return types (Stage 1 buffer AST, Stage 2 irep via index) ----
 
     def type_of(node, document, index = nil, depth = 0)
@@ -272,6 +567,9 @@ module MrubyLsp
         Completion.basic_type(node) || case node
           when Prism::LocalVariableReadNode
             infer_local(node.name, node.location.start_offset, document, index, depth)
+          when Prism::ItLocalVariableReadNode
+            # `it` has no name field; it is block param 0 of its ItParameters block.
+            infer_local(:it, node.location.start_offset, document, index, depth)
           when Prism::InstanceVariableReadNode
             infer_variable(:ivar, node.name.to_s, node.location.start_offset, document, index, depth)
           when Prism::ClassVariableReadNode

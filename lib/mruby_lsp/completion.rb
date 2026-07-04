@@ -483,6 +483,8 @@ module MrubyLsp
              case receiver
              when Prism::LocalVariableReadNode
                TypeInference.infer_local(receiver.name, receiver.location.start_offset, document, index)
+             when Prism::ItLocalVariableReadNode
+               TypeInference.infer_local(:it, receiver.location.start_offset, document, index)
              when Prism::InstanceVariableReadNode
                TypeInference.infer_variable(:ivar, receiver.name.to_s, receiver.location.start_offset, document, index)
              when Prism::ClassVariableReadNode
