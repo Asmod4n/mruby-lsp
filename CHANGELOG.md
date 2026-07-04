@@ -121,6 +121,14 @@ what mruby "usually" has.
   (`mruby-lsp-update rebuild`: clears the cached build + reflect_so, then
   setup). It was an alias of Build (another incremental setup) — exactly the
   path a stale cache no-ops — so "rebuild" didn't rebuild.
+- New **Reset Workspace Cache** command (`mruby-lsp-update reset <project>`):
+  deletes the workspace's entire cache — build, fetched gem clones, reflection
+  artifacts, the recorded fingerprint — and sets up from scratch. The
+  user-facing recovery for a wedged cache (a half-failed update, a stale
+  pre-gate build); previously the only way out was deleting
+  `~/.cache/mruby-lsp/<workspace>` by hand. Unlike `rebuild` it also clears
+  the fetched clones and works even when discovery no longer recognizes the
+  cache as set up.
 - Completion now shows a C method's **real parameter names** (`String#index` →
   `(sub, pos = ...)`) instead of the aspec's `argN` placeholders, matching what
   hover and signature help already showed. All three render their signature

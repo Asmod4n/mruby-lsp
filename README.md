@@ -204,7 +204,11 @@ trust the workspace when prompted, and the extension offers to build it for you.
 **VS Code / VSCodium.** Open an mruby project and **trust the workspace** — the
 extension only builds, installs, or starts the server in a trusted workspace.
 Commands (palette, prefix `mruby-lsp:`): Build/Setup Server, Rebuild Now, Restart
-Server, Stop Server, Update mruby, Update Pulled-in Gems. Settings:
+Server, Stop Server, Update mruby, Update Pulled-in Gems, and Reset Workspace
+Cache — the recovery hammer: it deletes the workspace's whole cache (build,
+fetched gems, reflection artifacts) and sets up from scratch, for when a cache
+is wedged in a state no incremental path fixes (CLI:
+`mruby-lsp-update reset <project>`). Settings:
 `mrubyLsp.rebuildOnSave`, `mrubyLsp.requestTimeout`, `mrubyLsp.rubyPath`,
 `mrubyLsp.trace.server` (off by default; `verbose` logs the full LSP
 conversation), and the debugger settings `mrubyLsp.mrdbPath`,

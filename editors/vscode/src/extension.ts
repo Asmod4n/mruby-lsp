@@ -624,7 +624,7 @@ async function runSetup(root: string): Promise<void> {
 // Run an update action ("mruby" | "gems" | "rebuild") via mruby-lsp-update, in
 // a terminal. Each update re-runs setup itself, so the server just needs a
 // restart after.
-function runUpdate(action: "mruby" | "gems" | "rebuild", root: string): void {
+function runUpdate(action: "mruby" | "gems" | "rebuild" | "reset", root: string): void {
   const setup = resolveSetupCommand();
   // mruby-lsp-update sits next to mruby-lsp-setup.
   const update =
@@ -679,6 +679,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("mrubyLsp.updateGems", () => {
       const folder = vscode.workspace.workspaceFolders?.[0];
       if (folder) runUpdate("gems", folder.uri.fsPath);
+    }),
+    vscode.commands.registerCommand("mrubyLsp.resetCache", () => {
+      // The recovery hammer: delete the workspace's whole cache (build,
+      // fetched clones, reflect_so, fingerprint) and set up from scratch.
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (folder) runUpdate("reset", folder.uri.fsPath);
     }),
   );
 

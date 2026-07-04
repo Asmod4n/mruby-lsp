@@ -21,6 +21,15 @@
 #             returns near-empty / wrong results). This is the hammer for that:
 #             throw away the build artifacts and rebuild from clean source. The
 #             user's mruby checkout and the build lock/config are untouched.
+#   reset   — delete the workspace's ENTIRE cache dir (build, fetched gem
+#             clones, reflect_so, paths.env, the native fingerprint) and set up
+#             from scratch. The recovery hammer for ANY wedged cache state — a
+#             half-failed update, a cache built by an old version that no gate
+#             catches — equivalent to `rm -rf` of the per-workspace cache by
+#             hand, then setup. Unlike `rebuild` it also drops the fetch/ clones
+#             and works even when the cache is too broken for discovery to call
+#             it "set up". The project tree and the out-of-project state/consent
+#             are untouched.
 
 require "fileutils"
 
@@ -47,7 +56,7 @@ module MrubyLsp
     def run(argv)
       action  = argv[0]
       project = argv[1]
-      fail!("usage: mruby-lsp-update <mruby|gems|rebuild> <project-path>") unless action && project
+      fail!("usage: mruby-lsp-update <mruby|gems|rebuild|reset> <project-path>") unless action && project
       project = File.expand_path(project)
       fail!("no such directory: #{project}") unless Dir.exist?(project)
 
@@ -109,8 +118,25 @@ module MrubyLsp
         run_setup(project)
         puts "rebuilt from clean."
 
+      when "reset"
+        # Delete the workspace's WHOLE cache and set up from scratch — the
+        # user-facing recovery for any wedged cache state (a half-failed
+        # update, a stale build no gate catches). Deliberately does not
+        # require the cache to be intact ("run setup first" would refuse the
+        # user exactly when they need this most); a missing cache just means
+        # there is nothing to clear before the fresh setup.
+        cache = MrubyLsp::Discovery::BuildDiscovery.cache_dir(project)
+        if cache && Dir.exist?(cache)
+          FileUtils.rm_rf(cache)
+          puts "==> cleared cache: #{cache}"
+        else
+          puts "==> no cache for #{project} — nothing to clear"
+        end
+        run_setup(project)
+        puts "cache reset; workspace set up from scratch."
+
       else
-        fail!("unknown action '#{action}' (expected: mruby, gems, or rebuild)")
+        fail!("unknown action '#{action}' (expected: mruby, gems, rebuild, or reset)")
       end
     end
   end

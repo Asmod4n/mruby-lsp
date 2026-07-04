@@ -48,6 +48,10 @@
       {
         "command": "mrubyLsp.updateGems",
         "title": "mruby-lsp: Update Pulled-in Gems (refresh to latest)"
+      },
+      {
+        "command": "mrubyLsp.resetCache",
+        "title": "mruby-lsp: Reset Workspace Cache (delete + set up from scratch)"
       }
     ],
     "configuration": {
