@@ -107,6 +107,20 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- The per-workspace clean-rebuild gate **fails closed on a missing fingerprint
+  marker**: an existing cached build with no recorded `native.sha256` (a
+  workspace set up before the gate existed) is now wiped and rebuilt instead of
+  being silently adopted as current. Previously setup skipped the wipe AND
+  stamped the current digest, permanently laundering the stale cache — no later
+  release (the digest is version-immune by design) could ever trigger the
+  rebuild, and the server would crash at startup on VM invariants the stale
+  archive lacks (e.g. mruby-platform's `Platform` constants). Field symptom:
+  update logs showing "up to date, skipping" with a build summary that lists
+  the gem — the summary prints the evaluated config, not the archive.
+- The editor's **Rebuild Now** command now runs the actual clean rebuild
+  (`mruby-lsp-update rebuild`: clears the cached build + reflect_so, then
+  setup). It was an alias of Build (another incremental setup) — exactly the
+  path a stale cache no-ops — so "rebuild" didn't rebuild.
 - Completion now shows a C method's **real parameter names** (`String#index` →
   `(sub, pos = ...)`) instead of the aspec's `argN` placeholders, matching what
   hover and signature help already showed. All three render their signature

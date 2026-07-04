@@ -212,8 +212,17 @@ module MrubyLsp
 
       native_marker = File.join(cache, "native.sha256")
       prior_digest = (File.read(native_marker).strip if File.exist?(native_marker))
-      if prior_digest && prior_digest != native_digest
-        warn "mruby-lsp-setup: native code changed since last build — forcing a clean rebuild"
+      # FAIL CLOSED on a missing marker: an existing build with no recorded
+      # fingerprint predates the gate (or a failed run never stamped it), so
+      # what it was built against is UNKNOWN — treat it as changed. Skipping
+      # here and stamping the current digest below would launder a stale cache
+      # as current, and then no later update could ever trigger the rebuild
+      # (the digest is content-based, so version bumps don't move it). A fresh
+      # workspace has no build_dir yet and builds from scratch regardless.
+      if (prior_digest || Dir.exist?(build_dir)) && prior_digest != native_digest
+        warn "mruby-lsp-setup: native code changed since last build " \
+             "(#{prior_digest ? 'digest mismatch' : 'no recorded fingerprint'}) " \
+             "— forcing a clean rebuild"
         FileUtils.rm_rf(build_dir)
         FileUtils.rm_rf(File.join(cache, "mruby_reflect"))
       end

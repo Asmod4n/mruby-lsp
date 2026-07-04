@@ -621,9 +621,10 @@ async function runSetup(root: string): Promise<void> {
   );
 }
 
-// Run an update action ("mruby" | "gems") via mruby-lsp-update, in a terminal.
-// Each update re-runs setup itself, so the server just needs a restart after.
-function runUpdate(action: "mruby" | "gems", root: string): void {
+// Run an update action ("mruby" | "gems" | "rebuild") via mruby-lsp-update, in
+// a terminal. Each update re-runs setup itself, so the server just needs a
+// restart after.
+function runUpdate(action: "mruby" | "gems" | "rebuild", root: string): void {
   const setup = resolveSetupCommand();
   // mruby-lsp-update sits next to mruby-lsp-setup.
   const update =
@@ -657,8 +658,12 @@ export function activate(context: vscode.ExtensionContext): void {
       if (folder) runSetup(folder.uri.fsPath);
     }),
     vscode.commands.registerCommand("mrubyLsp.rebuild", () => {
+      // The CLEAN rebuild (`mruby-lsp-update rebuild`: clears the cached build
+      // + reflect_so, then setup) — not another incremental setup like Build.
+      // Incremental setup can no-op against a stale cache; "Rebuild Now" is the
+      // user reaching for the hammer, so hand them the hammer.
       const folder = vscode.workspace.workspaceFolders?.[0];
-      if (folder) runSetup(folder.uri.fsPath);
+      if (folder) runUpdate("rebuild", folder.uri.fsPath);
     }),
     vscode.commands.registerCommand("mrubyLsp.restart", async () => {
       await stopClient();

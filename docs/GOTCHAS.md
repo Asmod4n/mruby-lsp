@@ -991,3 +991,27 @@ out-of-tree records and caches. Install and uninstall are then symmetric.
 
 Lesson: never compute an install dir by counting `..` off `__dir__`; ask RubyGems
 (`Gem.bindir`). If you place files RubyGems doesn't track, you own removing them.
+
+## Missing native.sha256 must fail CLOSED, or a stale cache launders itself
+
+The per-workspace clean-rebuild gate compares the gem's native-content
+fingerprint against `cache/native.sha256`. The trap: when the marker was
+MISSING (a workspace set up by a version that predates the gate, or an
+otherwise-uncertain cache) the original check —
+`if prior_digest && prior_digest != native_digest` — skipped the wipe, built
+nothing (mtimes are restored on install, so mruby's mtime-driven rake sees
+"up to date"), and then STAMPED the current digest at the end of setup. From
+that run on, every future comparison is equal: the stale cache is laundered as
+current, and no later release can ever trigger the rebuild. The fingerprint is
+content-based by design (immune to versions and mtimes), so bumping the gem
+version does nothing — that immunity is exactly what makes the laundering
+permanent. Field symptom: a build summary that LISTS a gem (the summary prints
+the evaluated config, not the archive) while the reflected VM lacks it —
+mruby-platform's `Platform` constants missing crashed the server at startup.
+
+Fix shape: an EXISTING build with no recorded fingerprint is "unknown
+provenance" and must be treated as changed (wipe build + reflect_so); only a
+genuinely fresh workspace (no build dir) skips the wipe because there is
+nothing to wipe. Corollary for the editor: the "Rebuild Now" command must run
+the clean rebuild (`mruby-lsp-update rebuild`), NOT another incremental setup —
+an incremental setup is exactly the path the laundered cache no-ops.
