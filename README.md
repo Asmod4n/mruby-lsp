@@ -96,6 +96,29 @@ completes and jumps as its annotated class) and the return value; in C it sets
 the return type that drives typing of chained calls. Anything not concrete
 (`void`, `untyped`, a union) is ignored, so inference still runs.
 
+`#:` works on **compiled methods too**: the server reads the line above a VM
+method's `def` from the source file the build recorded, so a gem can annotate
+its API once in its own mrblib and every project that builds it gets typed
+chains — no buffer needs to be open, and an annotation added after the last
+build is picked up immediately.
+
+For a **local** whose right-hand side can't be inferred — typically a factory
+that returns a different class per input (`URL(uri)` dispatches on the scheme;
+no static analysis can know that, and mruby-lsp never evals) — pin it with a
+steep-style trailing comment; the pin wins over inference:
+
+```ruby
+api = URL("https://example.com") #: URL::HTTP
+api.get        # completes/hovers as URL::HTTP
+```
+
+Only a bare class name is accepted (no unions, no generics) — the pin names
+one receiver class or it names nothing. Also inferred without any annotation:
+`rescue SomeError => e` types `e` from the rescue class list (bare `rescue`
+→ StandardError), and the Kernel conversion casts `Array(x)`, `String(x)`,
+`Integer(x)`, `Float(x)`, `Hash(x)`, `Rational(x)`, `Complex(x)` type by
+language definition.
+
 **Declared instance-variable types.** mruby-lsp builds
 [`mruby-native-ext-type`](https://github.com/Asmod4n/mruby-native-ext-type) into
 its reflection VM, so a class's `native_ext_type :@conn, Socket` declaration is

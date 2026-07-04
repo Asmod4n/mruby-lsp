@@ -179,7 +179,10 @@ module MrubyLsp
         # the cursor's nesting so a user-defined (possibly nested) type resolves.
         type =
           if document && node.is_a?(Prism::LocalVariableWriteNode) && node.value
-            TypeInference.type_of(node.value, document, index, 0)
+            # A trailing `#: Type` pin on the assignment wins (same rule as
+            # infer_local's read path — see trailing_annotation).
+            TypeInference.trailing_annotation(document, node.location.start_line) ||
+              TypeInference.type_of(node.value, document, index, 0)
           elsif document
             TypeInference.infer_local(node.name, node.location.start_offset, document, index)
           end

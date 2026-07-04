@@ -4,6 +4,7 @@ require "set"
 require "prism"
 require_relative "param_format"
 require_relative "block_params"
+require_relative "inline_type"
 module MrubyLsp
   # An entry in the index. Plain data — no ruby-lsp types. The Reflector (T3.2)
   # populates these from the live VM; the language features (T4.x) read them.
@@ -92,6 +93,8 @@ module MrubyLsp
       @csig_memo = {}
       @yield_memo = {}        # entry name => [block param name, ...] | nil
       @source_ast_memo = {}   # ruby source uri => parsed Prism AST | nil
+      @ruby_ann_memo = {}     # entry name => `#:` return class from source | nil
+      @source_lines_memo = {} # ruby source uri => file lines | nil
 
       # Buffer layer (T7): per-uri harvested entries from open docs. Consulted
       # FIRST — buffer always wins. order_key ranks uris by mruby's compile order
@@ -764,6 +767,49 @@ module MrubyLsp
       ast = source_ast(uri) or return nil
       def_node = find_def(ast, entry.line, method_name(entry.name)) or return nil
       BlockParams.from_ruby(def_node)
+    end
+
+    # Stage 2.5 (lazy): a hand-written `#:` annotation on the line above a
+    # compiled Ruby method's def, read from the source file the VM recorded.
+    # The annotation is the CONTRACT and wins over the irep-derived type — the
+    # same precedence a buffer def's annotation has over AST inference. Gem
+    # authors annotate once in their mrblib and every consumer's chains type,
+    # no open buffer needed. Robust to a file that drifted since the build:
+    # find_def locates the def by NAME (preferring the recorded line), so an
+    # annotation added after the last build is picked up immediately.
+    def ruby_return_annotation(entry)
+      return nil unless entry.respond_to?(:kind) && entry.kind == :method
+      return nil if entry.respond_to?(:native) && entry.native
+      uri = entry.uri
+      return nil unless uri&.start_with?("file://") && uri.end_with?(".rb")
+      @memo_mutex.synchronize do
+        key = entry.name
+        return @ruby_ann_memo[key] if @ruby_ann_memo.key?(key)
+        @ruby_ann_memo[key] = compute_ruby_return_annotation(entry, uri)
+      end
+    end
+
+    def compute_ruby_return_annotation(entry, uri)
+      ast = source_ast(uri) or return nil
+      def_node = find_def(ast, entry.line, method_name(entry.name)) or return nil
+      line = def_node.location.start_line
+      return nil if line < 2
+      lines = source_lines(uri) or return nil
+      raw = lines[line - 2].to_s.strip
+      return nil unless raw.start_with?("#:")
+      mt = InlineType.extract(raw)
+      mt && InlineType.return_class_name(mt)
+    end
+
+    def source_lines(uri)
+      return @source_lines_memo[uri] if @source_lines_memo.key?(uri)
+      @source_lines_memo[uri] =
+        begin
+          path = uri.sub(%r{\Afile://}, "")
+          File.file?(path) ? File.readlines(path) : nil
+        rescue StandardError
+          nil
+        end
     end
 
     def source_ast(uri)

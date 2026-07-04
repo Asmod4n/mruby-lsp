@@ -162,7 +162,16 @@ module MrubyLsp
       if bind && (write.nil? || write.location.end_offset < bind[0])
         return bind[1]
       end
-      return type_of(write.value, document, index, depth + 1) if write && write.value
+      if write && write.value
+        # A steep-style trailing annotation on the assignment line pins the
+        # local: `api = URL("https://…") #: URL::HTTP`. The hand-written pin
+        # WINS over RHS inference — it exists exactly for factories that
+        # dispatch to different classes (URL()), whose single return type is
+        # not inferable and never will be.
+        ann = trailing_annotation(document, write.location.start_line)
+        return ann if ann
+        return type_of(write.value, document, index, depth + 1)
+      end
 
       # No assignment reaches this use, so `name` may be a method parameter. A
       # param has no LocalVariableWriteNode; its type, if any, comes from the
@@ -305,6 +314,15 @@ module MrubyLsp
           next unless pos
           take.call(loc.start_offset,
                     [yield_param_type(node, pos, arity, document, index, depth)])
+        when Prism::RescueNode
+          # `rescue SomeError => e`: the class list IS the type test — matching
+          # proves e is one of those classes. A single (uniform) class types e;
+          # a bare `rescue => e` catches StandardError, whose methods every
+          # subclass instance has, so the baseline class is sound to resolve on.
+          ref = node.reference
+          next unless ref.is_a?(Prism::LocalVariableTargetNode) && ref.name == name
+          next unless ref.location.start_offset <= usage_offset
+          take.call(ref.location.start_offset, [rescue_class(node)])
         end
       end
       best
@@ -396,6 +414,45 @@ module MrubyLsp
       when Prism::PinnedExpressionNode
         type_of(value.expression, document, index, depth + 1)
       end
+    end
+
+    # A steep-style trailing `#: Type` comment on `line`, as a bare constant
+    # path, or nil. Only a plain class name is accepted (no unions, no
+    # generics) — the pin names ONE receiver class or it names nothing.
+    def trailing_annotation(document, line)
+      return nil unless document.respond_to?(:ast)
+      ast = document.ast
+      return nil unless ast.respond_to?(:comments)
+      c = ast.comments.find { |x| x.location.start_line == line }
+      return nil unless c
+      raw = c.location.slice.strip
+      return nil unless raw.start_with?("#:")
+      constant_path_token(raw.delete_prefix("#:").strip)
+    end
+
+    # `s` when it is a bare constant path (Foo, URL::HTTP), else nil. A hand
+    # scan over fixed-delimiter segments — not structured input, no regex.
+    def constant_path_token(s)
+      return nil if s.empty?
+      segs = s.split("::", -1)
+      ok = segs.all? do |seg|
+        next false if seg.empty? || !seg[0].between?("A", "Z")
+        seg.each_char.all? do |ch|
+          ch == "_" || ch.between?("A", "Z") || ch.between?("a", "z") || ch.between?("0", "9")
+        end
+      end
+      ok ? s : nil
+    end
+
+    # The class a rescue clause proves about its bound variable: the single
+    # (uniform) listed exception class, or StandardError for a bare rescue.
+    # Mixed classes -> nil (a union has no single receiver -- never guess).
+    def rescue_class(resc)
+      return "StandardError" if resc.exceptions.empty?
+      names = resc.exceptions.map do |x|
+        Completion.basic_type(x) if x.is_a?(Prism::ConstantReadNode) || x.is_a?(Prism::ConstantPathNode)
+      end
+      names.uniq.size == 1 ? names.first : nil
     end
 
     # The single type of a LITERAL range's endpoints ((1..9) -> Integer), nil
@@ -589,7 +646,24 @@ module MrubyLsp
       defn = resolve_def(call, document, index, depth)
       return infer_return(defn, document, index, depth + 1) if defn
       # Stage 2: a compiled VM Ruby method, via its irep-derived Entry#return_type.
-      infer_external_call(call, document, index, depth)
+      infer_external_call(call, document, index, depth) || kernel_cast_type(call)
+    end
+
+    # Kernel's capitalized conversion methods have LANGUAGE-defined return
+    # types: Array(x) is an Array or it raised. They are C methods, so the
+    # irep never types them; this is the fallback that makes `xs = Array(v)`
+    # type without clangd. Bare calls with arguments only (a receiver means
+    # something else entirely; argument-less `Integer` is a constant, and an
+    # explicit `Integer()` without args is not the conversion idiom). A buffer
+    # redefinition was already caught by Stage 1 above, and a VM/clangd type,
+    # when one exists, was preferred by Stage 2/3.
+    KERNEL_CASTS = {
+      Array: "Array", String: "String", Integer: "Integer", Float: "Float",
+      Hash: "Hash", Rational: "Rational", Complex: "Complex",
+    }.freeze
+    def kernel_cast_type(call)
+      return nil unless call.receiver.nil? && call.arguments&.arguments&.any?
+      KERNEL_CASTS[call.name]
     end
 
     def resolve_def(call, document, index, depth)
@@ -673,9 +747,12 @@ module MrubyLsp
       return nil unless klass
       entry = external_method_entry(index, klass, call.name.to_s, singleton)
       return nil unless entry
-      # Stage 1/2: a precomputed type (buffer AST / irep). Stage 3: a C method
-      # with no precomputed type -> resolve lazily via clangd (memoized).
-      rt = entry.return_type ||
+      # Stage 2.5 first: a hand-written `#:` on the compiled method's def (read
+      # from its source file) is the contract and wins over the irep type —
+      # the same precedence buffer-def annotations have. Then Stage 1/2's
+      # precomputed type (buffer AST / irep), then Stage 3 lazily via clangd.
+      rt = (index.respond_to?(:ruby_return_annotation) ? index.ruby_return_annotation(entry) : nil) ||
+           entry.return_type ||
            (index.respond_to?(:c_return_type) ? index.c_return_type(entry) : nil)
       # A constructor that builds a fresh instance of its RECEIVER class (IO.for_fd
       # -> IO, File.for_fd -> File) can't be a fixed name in the index — it depends

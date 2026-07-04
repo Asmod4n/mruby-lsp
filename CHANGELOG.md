@@ -25,7 +25,21 @@ what mruby "usually" has.
   captures (`in Integer => n`, `expr => x`, `*rest`/`**opts`), block parameters
   (from a buffer def's own `yield`s, or a literal collection's element type for
   core iterators — `[1, 2].each { |e| … }`, `{a: 1}.each { |k, v| … }`,
-  `5.times { |i| … }`), numbered params (`_1`), and `it`.
+  `5.times { |i| … }`), numbered params (`_1`), and `it`. Rescue bindings type
+  from their class list (`rescue SomeError => e`; bare `rescue` →
+  StandardError), and the Kernel conversion casts (`Array(x)`, `String(x)`,
+  `Integer(x)`, `Float(x)`, `Hash(x)`, `Rational(x)`, `Complex(x)`) type by
+  language definition.
+- `#:` annotations are read for **compiled VM methods** from the source file
+  the build recorded (Stage 2.5, lazy + memoized; defs found by name, so a
+  drifted or freshly annotated file works without a rebuild). A gem annotates
+  its API once in its mrblib and every consumer's chains type — the annotation
+  is the contract and wins over the irep-derived type, matching buffer-def
+  precedence.
+- **Trailing local pins** (steep-style): `api = URL("…") #: URL::HTTP` types a
+  local whose right-hand side is statically unknowable (per-input factory
+  dispatch). The pin wins over inference; only a bare class name is accepted —
+  a union or generic resolves to nothing rather than a guess.
   C constructors that return a **fresh instance of their receiver class**
   (`IO.for_fd` → `IO`, `File.for_fd` → `File`) are inferred from the clangd AST —
   including when the fresh object is handed back through one or more helper
