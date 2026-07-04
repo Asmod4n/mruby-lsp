@@ -118,6 +118,6 @@ is incompatible with this premise.
 
 ## Environment
 
-Arch/CachyOS, Fish, VSCodium. Ruby 3.4 (host), mruby 4.0.0, GCC 13, Node 22.
-Prism for Ruby parsing; addr2line/llvm-symbolizer/atos + nm for C locations;
-transport via the `language_server-protocol` gem.
+Arch/CachyOS, Fish, VSCodium. Ruby 3.4 (host), mruby head, GCC 13, Node 22.
+Prism (latest) for Ruby parsing; addr2line/llvm-symbolizer/atos + nm for C
+locations; transport via the `language_server-protocol` gem.
