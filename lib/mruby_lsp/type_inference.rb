@@ -113,18 +113,37 @@ module MrubyLsp
       end
     end
 
-    # The VALUE type of a constant, from its assignment in this buffer's AST
-    # (CONST = <literal/typed expr> -> that expr's type). nil if not assigned
-    # here or the value's type is unknown -- never guess. Buffer-only: an edit to
-    # the assignment reflects immediately; a compiled-only constant stays nil
-    # (the VM doesn't reflect constant value classes -- that would be a new op).
+    # The VALUE type of a constant: from its assignment in this buffer's AST
+    # (CONST = <literal/typed expr> -> that expr's type; an edit reflects
+    # immediately), else from the VALUE FACTS the Reflector captured off the
+    # live VM at populate (a compiled-only HEX = "..." types as String). A
+    # class-valued constant yields nil here -- reading a class isn't an
+    # instance; the class-receiver cases live in basic_type / the singleton arm
+    # of infer_external_call. Never guess: no write and no captured fact -> nil.
     def infer_constant(node, document, index = nil, depth = 0)
       return nil if depth > MAX_DEPTH
       short = constant_short_name(node)
       return nil unless short
       write = find_constant_write(document.ast.value, short)
-      return nil unless write && write.value
-      type_of(write.value, document, index, depth + 1)
+      return type_of(write.value, document, index, depth + 1) if write && write.value
+      return nil unless index.respond_to?(:const_value)
+      name = constant_node_name(node)
+      return nil unless name
+      # Resolve the name as written through the use site's lexical nesting,
+      # innermost scope first, bare name last.
+      parts = enclosing_class_name(document.ast.value, node.location.start_offset).split("::")
+      parts = [] if parts == ["Object"]
+      candidates = []
+      until parts.empty?
+        candidates << (parts + [name]).join("::")
+        parts.pop
+      end
+      candidates << name
+      candidates.each do |cand|
+        info = index.const_value(cand)
+        return info[:own] if info && !info[:is_class]
+      end
+      nil
     end
 
     def constant_short_name(node)
@@ -186,7 +205,7 @@ module MrubyLsp
       # A union collapses back toward a single class through the control-flow
       # guards that dominate this use. Single types skip this entirely -- the
       # monomorphic fast path is byte-for-byte the pre-union behavior.
-      narrow_union(type, name.to_sym, anchor, usage_offset, scope)
+      narrow_union(type, name.to_sym, anchor, usage_offset, scope, index)
     end
 
     # Map a parameter to its annotated class: find the enclosing def, the param's
@@ -297,7 +316,7 @@ module MrubyLsp
     ISA_TESTS = %i[is_a? kind_of? instance_of?].freeze
     FALSY = "FalseClass | NilClass"
 
-    def narrow_union(type, name, anchor, usage_offset, scope)
+    def narrow_union(type, name, anchor, usage_offset, scope, index = nil)
       return type unless UnionType.union?(type)
       guards = [] # [predicate_offset, :intersect | :subtract, classes]
       pruned_walk(scope) do |node|
@@ -312,8 +331,26 @@ module MrubyLsp
       end
       guards.sort_by!(&:first)
       guards.reduce(type) do |t, (_, op, classes)|
-        n = op == :intersect ? UnionType.intersect(t, classes) : UnionType.subtract(t, classes)
-        n || t
+        members = UnionType.members(t)
+        kept =
+          if op == :intersect
+            members.select { |m| isa_any?(m, classes, index) }
+          else
+            members.reject { |m| isa_any?(m, classes, index) }
+          end
+        UnionType.of(kept) || t
+      end
+    end
+
+    # Does member class M satisfy `is_a?` for ANY of the guard classes? By name,
+    # and -- when a VM index is present -- through M's REAL ancestry, so
+    # `x.is_a?(URL::Transfer)` keeps/drops URL::FTP (a subclass) correctly.
+    # Class case-equality and ancestry can't be monkey-patched in mruby, which
+    # is what keeps this sound.
+    def isa_any?(member, classes, index)
+      UnionType.members(classes).any? do |k|
+        member == k ||
+          (index.respond_to?(:ancestors) && index.ancestors(member).to_a.include?(k))
       end
     end
 
@@ -816,7 +853,88 @@ module MrubyLsp
       defn = resolve_def(call, document, index, depth)
       return infer_return(defn, document, index, depth + 1) if defn
       # Stage 2: a compiled VM Ruby method, via its irep-derived Entry#return_type.
-      infer_external_call(call, document, index, depth) || kernel_cast_type(call)
+      infer_external_call(call, document, index, depth) ||
+        const_container_type(call, document, index, depth) ||
+        kernel_cast_type(call)
+    end
+
+    # Qualify a type's members -- written inside a compiled file's nesting --
+    # into the real VM names the rest of the pipeline resolves ("Response"
+    # inside `class URL` -> "URL::Response"), innermost scope first, the name
+    # as written last (kept when nothing in the index matches: better a
+    # non-resolving honest name than a dropped member).
+    def qualify_type_in_scope(type, offset, document, index)
+      return type unless index.respond_to?(:resolve)
+      UnionType.of(UnionType.members(type).map do |member|
+        parts = enclosing_class_name(document.ast.value, offset).split("::")
+        parts = [] if parts == ["Object"]
+        qualified = member
+        until parts.empty?
+          cand = (parts + [member]).join("::")
+          if index.resolve(cand).to_a.any?
+            qualified = cand
+            break
+          end
+          parts.pop
+        end
+        qualified
+      end)
+    end
+
+    # ---- compiled containers: CONST[key] / CONST_HASH[key].new ---------------
+    # The live VM knows what a compiled constant HOLDS (Reflector captured its
+    # value facts at populate). Two calls become typable with no annotation:
+    #
+    #   CONST[key]        -> the union of the container's member VALUE classes
+    #                        ({ "a" => 1, "b" => "x" } -> Integer | String)
+    #   CONST[key].new    -> when every member IS a class (a dispatch table,
+    #                        SCHEME_CLIENTS = { "http" => HTTP, ... }), indexing
+    #                        yields one of those CLASS OBJECTS, so .new builds
+    #                        the union of their instances -- gated members the
+    #                        build never compiled simply aren't in the hash.
+    #
+    # The receiver of .new may be the index call itself or a local assigned
+    # from one (`klass = SCHEME_CLIENTS[scheme]; klass.new`).
+    def const_container_type(call, document, index, depth)
+      return nil unless index.respond_to?(:const_value)
+      case call.name
+      when :[]
+        info = const_container_info(call, document, index)
+        # Members that are instances type the read directly; a table of CLASSES
+        # doesn't (indexing yields the class object, not an instance) -- that
+        # case types at the .new below.
+        info && !info[:members_are_classes] ? UnionType.of(info[:members]) : nil
+      when :new
+        recv = call.receiver
+        if recv.is_a?(Prism::LocalVariableReadNode)
+          scope = enclosing_scope(document.ast.value, recv.location.start_offset)
+          w = nearest_write(scope, recv.name, recv.location.start_offset)
+          recv = w && w.value
+        end
+        return nil unless recv.is_a?(Prism::CallNode) && recv.name == :[]
+        info = const_container_info(recv, document, index)
+        info && info[:members_are_classes] ? UnionType.of(info[:members]) : nil
+      end
+    end
+
+    # The captured value facts of the CONSTANT a `CONST[key]` call indexes,
+    # resolved through the use site's lexical nesting (SCHEME_CLIENTS inside
+    # `class URL` -> URL::SCHEME_CLIENTS). nil when the receiver isn't a
+    # constant, or the VM captured nothing (not a container / unknown const).
+    def const_container_info(call, document, index)
+      recv = call.receiver
+      return nil unless recv.is_a?(Prism::ConstantReadNode) || recv.is_a?(Prism::ConstantPathNode)
+      name = constant_node_name(recv)
+      return nil unless name
+      parts = enclosing_class_name(document.ast.value, recv.location.start_offset).split("::")
+      parts = [] if parts == ["Object"]
+      until parts.empty?
+        info = index.const_value((parts + [name]).join("::"))
+        return info if info && !info[:members].to_a.empty?
+        parts.pop
+      end
+      info = index.const_value(name)
+      info && !info[:members].to_a.empty? ? info : nil
     end
 
     # Kernel's capitalized conversion methods have LANGUAGE-defined return
@@ -915,15 +1033,21 @@ module MrubyLsp
         klass = concrete_receiver(type_of(recv, document, index, depth + 1)); singleton = false
       end
       return nil unless klass
-      entry = external_method_entry(index, klass, call.name.to_s, singleton)
+      entry = external_method_entry(index, klass, call.name.to_s, singleton,
+                                    bare_call: recv.nil?)
       return nil unless entry
       # Stage 2.5 first: a hand-written `#:` on the compiled method's def (read
       # from its source file) is the contract and wins over the irep type —
       # the same precedence buffer-def annotations have. Then Stage 1/2's
       # precomputed type (buffer AST / irep), then Stage 3 lazily via clangd.
+      # Stage 2.6 last: when neither the annotation, the irep, nor clangd
+      # knows, infer from the compiled method's RECORDED SOURCE AST -- the def
+      # itself is the proof. Cycles through nested compiled calls are cut in
+      # the index (per-entry memo + in-flight set).
       rt = (index.respond_to?(:ruby_return_annotation) ? index.ruby_return_annotation(entry) : nil) ||
            entry.return_type ||
-           (index.respond_to?(:c_return_type) ? index.c_return_type(entry) : nil)
+           (index.respond_to?(:c_return_type) ? index.c_return_type(entry) : nil) ||
+           (index.respond_to?(:ruby_return_source_type) ? index.ruby_return_source_type(entry) : nil)
       # A constructor that builds a fresh instance of its RECEIVER class (IO.for_fd
       # -> IO, File.for_fd -> File) can't be a fixed name in the index — it depends
       # on this call site. clangd reports the RECEIVER sentinel; resolve it to the
@@ -931,14 +1055,20 @@ module MrubyLsp
       rt == CReturnType::RECEIVER ? klass : rt
     end
 
-    def external_method_entry(index, klass, name, singleton)
+    def external_method_entry(index, klass, name, singleton, bare_call: false)
       entries =
         if singleton && index.respond_to?(:singleton_methods_for)
           index.singleton_methods_for(klass)
         else
           index.visible_methods(klass)
         end
-      entries.find { |e| bare_method_name(e.name) == name }
+      found = entries.find { |e| bare_method_name(e.name) == name }
+      return found if found
+      # A BARE call reaches private methods too (Kernel#URL is private, like
+      # URI()); an explicit receiver never does.
+      if bare_call && index.respond_to?(:private_methods_of)
+        index.private_methods_of(klass).find { |e| bare_method_name(e.name) == name }
+      end
     end
 
     # "String#upcase" -> "upcase", "JSON.parse" -> "parse". Flat fixed-delimiter
@@ -1011,8 +1141,17 @@ module MrubyLsp
       when Prism::CaseNode
         node.conditions.flat_map { |w| terminal_exprs(w.statements) } +
           (node.else_clause ? terminal_exprs(node.else_clause.statements) : [nil])
-      else [node]
+      else
+        # A bare `raise` never RETURNS a value -- that arm contributes nothing
+        # to the return type (exceptions aren't returns), exactly like an
+        # explicit `return` path. Without this, a guard-then-raise arm would
+        # poison an otherwise fully proven method with "unknown".
+        raise_call?(node) ? [] : [node]
       end
+    end
+
+    def raise_call?(node)
+      node.is_a?(Prism::CallNode) && node.receiver.nil? && node.name == :raise
     end
 
     def else_terminals(subsequent)

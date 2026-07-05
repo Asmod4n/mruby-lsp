@@ -19,6 +19,7 @@
 #include <mruby.h>
 #include <mruby/class.h>
 #include <mruby/array.h>
+#include <mruby/hash.h>      /* mrb_hash_values (constant-value facts) */
 #include <mruby/variable.h>  /* mrb_const_get */
 #include <mruby/string.h>
 #include <mruby/error.h>      /* mrb_protect_error, E_TYPE_ERROR */
@@ -267,6 +268,53 @@ static mrb_value bd_platform(mrb_state *mrb, void *ud) {
   return mrb_nil_value();
 }
 
+/* Constant-VALUE facts, read from the loaded image (no eval): the class a
+ * constant's value is (or, when the value IS a class/module, that class
+ * itself), and -- when the value is a Hash/Array -- the same fact for every
+ * member. This is what lets Ruby type a compiled dispatch table
+ * (SCHEME_CLIENTS = { "http" => HTTP, ... }) as the union of the classes the
+ * BUILD actually put in it, no annotation needed. Shape:
+ *   [flags, own, [member, ...]]
+ * flags bit0 = the value itself is a class/module; bit1 = the container is
+ * non-empty and EVERY member is one. `own`/members are CLASS values, which
+ * value_bridge serializes as name tags -- host Ruby reads plain names. The
+ * shape inspection here is data extraction, not dispatch: every path builds
+ * the same triple. */
+static mrb_value class_of_or_self(mrb_state *mrb, mrb_value v) {
+  enum mrb_vtype t = mrb_type(v);
+  if (t == MRB_TT_CLASS || t == MRB_TT_MODULE || t == MRB_TT_SCLASS) return v;
+  return mrb_obj_value(mrb_obj_class(mrb, v));
+}
+static int is_class_like(mrb_value v) {
+  enum mrb_vtype t = mrb_type(v);
+  return t == MRB_TT_CLASS || t == MRB_TT_MODULE;
+}
+static mrb_value bd_const_classes(mrb_state *mrb, void *ud) {
+  req_t *q = ud;
+  mrb_value owner = resolve(mrb, q);                  /* raises -> nil downstream */
+  mrb_value v = mrb_const_get(mrb, owner, mrb_intern(mrb, q->meth, q->mlen));
+  mrb_int flags = is_class_like(v) ? 1 : 0;
+  mrb_value list = mrb_nil_value();
+  if (mrb_hash_p(v)) list = mrb_hash_values(mrb, v);
+  else if (mrb_array_p(v)) list = v;
+  mrb_value members = mrb_ary_new(mrb);
+  if (mrb_array_p(list)) {
+    mrb_int all = RARRAY_LEN(list) > 0;
+    for (mrb_int i = 0; i < RARRAY_LEN(list); i++) {
+      mrb_value m = mrb_ary_entry(list, i);
+      if (!is_class_like(m)) all = 0;
+      mrb_ary_push(mrb, members, class_of_or_self(mrb, m));
+    }
+    if (all) flags |= 2;
+  }
+  mrb_value ret = mrb_ary_new_capa(mrb, 3);
+  mrb_ary_push(mrb, ret, mrb_int_value(mrb, flags));
+  mrb_ary_push(mrb, ret, class_of_or_self(mrb, v));
+  mrb_ary_push(mrb, ret, members);
+  q->out = vb_from_mrb(mrb, ret);
+  return mrb_nil_value();
+}
+
 /* The protect dance, written once. `body` is always a literal callback name --
  * a direct symbol, never a stored or selected pointer -- so this is shared
  * boilerplate, not dispatch. The sole branch is protect's error flag; any raise
@@ -361,6 +409,12 @@ vb_value *mrb_bridge_platform(void *p) {
   bridge_t *b = (bridge_t *)p;
   req_t q = { NULL, 0, NULL, 0, 0, NULL };
   RUN_OP(b, q, bd_platform);
+}
+vb_value *mrb_bridge_const_classes(void *p, const char *cls, size_t clen,
+                                   const char *name, size_t nlen) {
+  bridge_t *b = (bridge_t *)p;
+  req_t q = { cls, clen, name, nlen, 0, NULL };
+  RUN_OP(b, q, bd_const_classes);
 }
 vb_value *mrb_bridge_source_location(void *p, const char *cls, size_t clen,
                                      const char *meth, size_t mlen) {

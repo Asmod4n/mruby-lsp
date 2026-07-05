@@ -92,9 +92,11 @@ module MrubyLsp
       @cdoc_memo = {}
       @csig_memo = {}
       @yield_memo = {}        # entry name => [block param name, ...] | nil
-      @source_ast_memo = {}   # ruby source uri => parsed Prism AST | nil
+      @source_ast_memo = {}   # ruby source uri => full Prism parse result | nil
       @ruby_ann_memo = {}     # entry name => `#:` return class from source | nil
       @source_lines_memo = {} # ruby source uri => file lines | nil
+      @ruby_src_rt_memo = {}  # entry name => source-AST-inferred return type | nil
+      @ruby_src_rt_inflight = Set.new # names being inferred NOW (recursion cut)
 
       # Buffer layer (T7): per-uri harvested entries from open docs. Consulted
       # FIRST — buffer always wins. order_key ranks uris by mruby's compile order
@@ -103,6 +105,14 @@ module MrubyLsp
       @buffer_ivar_by_uri = {} # uri → { "Class" => { "@x" => [type names] } }
                                # native_ext_type declared in an OPEN buffer
       @buffer_order = {}    # uri → comparable order key (lower = earlier compiled)
+
+      # Constant-VALUE facts captured from the live VM at populate (the VM
+      # closes afterwards): name -> { own:, is_class:, members:,
+      # members_are_classes: }. `own` is the class the value is (or IS, for a
+      # class-valued constant); `members` the same fact per Hash/Array member.
+      # Type inference reads these to type compiled value constants and
+      # dispatch-table factories (CONST_HASH[key].new -> member-class union).
+      @const_values = {}
 
       # Stage 4: return types mined from the test suite (TestHarvester), keyed by
       # the DEFINING method entry's name. Consulted by c_return_type when irep and
@@ -113,6 +123,15 @@ module MrubyLsp
     def add(entry)
       @entries[entry.name] << entry
       @methods_by_owner[entry.owner] << entry if entry.kind == :method
+    end
+
+    # ── constant-value facts (populated by the Reflector; see @const_values) ──
+    def set_const_value(name, info)
+      @const_values[name] = info
+    end
+
+    def const_value(name)
+      @const_values[name]
     end
 
     # Private instance-method entries, kept out of the public method table so
@@ -813,15 +832,75 @@ module MrubyLsp
     end
 
     def source_ast(uri)
+      source_parse(uri)&.value
+    end
+
+    # The FULL parse result (value + comments): the annotation reader wants the
+    # root node, the source-AST return inference below wants a document-shaped
+    # [ast, text] pair whose ast carries .comments too.
+    def source_parse(uri)
       return @source_ast_memo[uri] if @source_ast_memo.key?(uri)
 
       @source_ast_memo[uri] =
         begin
           path = uri.sub(%r{\Afile://}, "")
-          File.file?(path) ? Prism.parse(File.read(path)).value : nil
+          File.file?(path) ? Prism.parse(File.read(path)) : nil
         rescue StandardError
           nil
         end
+    end
+
+    # Stage 2.6: infer a compiled Ruby method's return type from its RECORDED
+    # source AST -- the same file/def resolution the `#:` annotation reader
+    # (above) uses, but running the buffer-grade AST inference over the def
+    # body when there is no annotation and no irep type. This is what lets a
+    # dispatch-table factory (URL() -> URL.call -> SCHEME_CLIENTS[scheme].new)
+    # type as the union its own source + the live VM prove, with NO annotation.
+    # Memoized per entry; an in-flight set cuts mutual recursion (A's source
+    # calls B, B's calls A) to "unknown" instead of looping. Compute runs
+    # OUTSIDE @memo_mutex: the inference re-enters this index (annotation
+    # reads, visible_methods, nested source inference) and the mutex is not
+    # reentrant.
+    def ruby_return_source_type(entry)
+      return nil unless entry.respond_to?(:kind) && entry.kind == :method
+      return nil if entry.respond_to?(:native) && entry.native
+      uri = entry.uri
+      return nil unless uri&.start_with?("file://") && uri.end_with?(".rb")
+      key = entry.name
+      @memo_mutex.synchronize do
+        return @ruby_src_rt_memo[key] if @ruby_src_rt_memo.key?(key)
+        return nil if @ruby_src_rt_inflight.include?(key)
+        @ruby_src_rt_inflight << key
+      end
+      result = nil
+      begin
+        result = compute_ruby_return_source_type(entry, uri)
+      ensure
+        @memo_mutex.synchronize do
+          @ruby_src_rt_inflight.delete(key)
+          @ruby_src_rt_memo[key] = result
+        end
+      end
+      result
+    end
+
+    SourceDoc = Struct.new(:ast, :text)
+
+    def compute_ruby_return_source_type(entry, uri)
+      # The inference module is loaded by every real consumer (server,
+      # completion, hover); a bare index require simply degrades to "unknown".
+      return nil unless defined?(MrubyLsp::TypeInference)
+      parse = source_parse(uri) or return nil
+      def_node = find_def(parse.value, entry.line, method_name(entry.name)) or return nil
+      lines = source_lines(uri) or return nil
+      doc = SourceDoc.new(parse, lines.join)
+      t = TypeInference.infer_return(def_node, doc, self, 0)
+      # Names inferred inside the compiled file are AS WRITTEN THERE
+      # (`Response.new` inside `class URL` -> "Response"); the consumer resolves
+      # through the CURSOR's nesting, which is a different file. Qualify each
+      # member through the def's own lexical nesting against this index now, so
+      # what leaves here is the real VM name (URL::Response).
+      t && TypeInference.qualify_type_in_scope(t, def_node.location.start_offset, doc, self)
     end
 
     # The DefNode named meth, preferring the one starting on `line` (the

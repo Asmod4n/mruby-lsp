@@ -266,6 +266,30 @@ module MrubyLsp
         uri: synthetic_uri(owner_of(name)), line: nil, params: nil,
         native: true, singleton: false, doc: nil
       ))
+      record_const_classes(index, name)
+    end
+
+    # Constant-VALUE facts from the live VM (bd_const_classes): the class the
+    # constant's value is (or IS, when the value is itself a class), and the
+    # same fact for every member of a Hash/Array value. Captured AT POPULATE --
+    # the VM closes after the walk -- and read from the index by type
+    # inference: it is what types a compiled dispatch table
+    # (SCHEME_CLIENTS = { "http" => HTTP, ... }) as the union of the classes
+    # the build actually put in it, and a compiled value constant (HEX = "...")
+    # as its value's class. A reflect .so predating the op -> skip (degrade).
+    def record_const_classes(index, name)
+      return unless @reflect.respond_to?(:const_classes)
+      raw = @reflect.const_classes(owner_of(name), name.split("::").last)
+      return if mruby_error?(raw) || !raw.is_a?(Array) || raw.size != 3
+      flags, own, members = raw
+      return unless flags.is_a?(Integer)
+      index.set_const_value(
+        name,
+        own: class_tag_name(own),
+        is_class: flags.anybits?(1),
+        members: Array(members).map { |m| class_tag_name(m) }.compact.uniq,
+        members_are_classes: flags.anybits?(2),
+      )
     end
 
     # Record the class's declared ivar types from mruby-native-ext-type, if the

@@ -169,5 +169,97 @@ glabels = Completion.items(gd, gpos, cidx).map { |i| i[:label] }
 check.("narrowed completion = full member  ", glabels.include?("ntuples") && glabels.include?("check"), true)
 check.("narrowed hides other member        ", glabels.include?("message"), false)
 
+# ── F. dispatch tables + compiled sources: URL() types with NO annotation ────
+# Simulates the mruby-url shape as a COMPILED gem: Kernel#URL (private) whose
+# recorded source calls URL.call, which indexes a constant hash of classes and
+# news the result. The constant's VALUE facts come from the index (captured
+# off the live VM at populate in production; hand-set here).
+
+require "tmpdir"
+FDIR = Dir.mktmpdir
+FSRC = File.join(FDIR, "fakeurl.rb")
+File.write(FSRC, <<~RB)
+  class URL
+    def self.call(uri)
+      scheme = uri
+      klass = SCHEME_CLIENTS[scheme]
+      return klass.new(uri) if klass
+      raise ArgumentError, "nope"
+    end
+
+    class HTTP
+      def get(o = {})
+        Response.new
+      end
+    end
+  end
+
+  module Kernel
+    def URL(uri)
+      URL.call(uri)
+    end
+  end
+RB
+
+fidx = MrubyLsp::Index.new
+%w[Object Kernel BasicObject].each { |c| fidx.set_ancestors(c, [c, "Object", "Kernel", "BasicObject"].uniq) }
+fidx.set_ancestors("URL",           %w[URL Object Kernel BasicObject])
+fidx.set_ancestors("URL::HTTP",     %w[URL::HTTP Object Kernel BasicObject])
+fidx.set_ancestors("URL::FTP",      %w[URL::FTP URL::Transfer Object Kernel BasicObject])
+fidx.set_ancestors("URL::Response", %w[URL::Response Object Kernel BasicObject])
+def fm(owner, name, uri:, line:, singleton: false)
+  E.new(name: "#{owner}#{singleton ? '.' : '#'}#{name}", owner: owner, kind: :method,
+        uri: uri, line: line, params: "()", native: false, singleton: singleton, doc: nil)
+end
+furi = "file://#{FSRC}"
+%w[URL URL::HTTP URL::FTP URL::Transfer URL::Response].each do |c|
+  fidx.add(E.new(name: c, owner: "Object", kind: :class, uri: "file:///vm.rb", line: 1,
+                 params: nil, native: false, singleton: false, doc: nil, superclass: "Object"))
+end
+fidx.add(fm("URL", "call", uri: furi, line: 2, singleton: true))
+fidx.add(fm("URL::HTTP", "get", uri: furi, line: 9))
+fidx.add(fm("URL::HTTP", "post", uri: "file:///vm.rb", line: 1))
+fidx.add(fm("URL::FTP", "download", uri: "file:///vm.rb", line: 1))
+fidx.add(fm("URL::Response", "body", uri: "file:///vm.rb", line: 1))
+fidx.add_private(fm("Kernel", "URL", uri: furi, line: 17))
+fidx.set_const_value("URL::SCHEME_CLIENTS",
+                     own: "Hash", is_class: false,
+                     members: %w[URL::HTTP URL::FTP], members_are_classes: true)
+fidx.set_const_value("URL::KNOWN",
+                     own: "Array", is_class: false,
+                     members: %w[String], members_are_classes: false)
+
+def call_named(d, name)
+  found = nil
+  v = lambda { |n| (found = n if n.is_a?(Prism::CallNode) && n.name == name); n.compact_child_nodes.each(&v) }
+  v.call(d.ast.value)
+  found
+end
+
+fat = ->(d, name, needle) { ti.infer_local(name.to_sym, d.text.rindex(needle), d, fidx) }
+
+d = doc(%(x = URL("https://x")\nx\n))
+check.("URL() -> union, NO annotation     ", ti.infer_call(call_named(d, :URL), d, fidx), "URL::FTP | URL::HTTP")
+check.("union flows into the local        ", fat.(d, :x, "x\n"), "URL::FTP | URL::HTTP")
+
+# is_a? guard against the PARENT subtracts the subclass member (VM ancestry)
+d = doc(%(x = URL("https://x")\nreturn x if x.is_a?(URL::Transfer)\nx\n))
+check.("ancestry-aware narrowing          ", fat.(d, :x, "x\n"), "URL::HTTP")
+
+# chained through a compiled method: Stage 2.6 infers get's body and QUALIFIES
+# the as-written name through the def's nesting (Response -> URL::Response)
+d = doc(%(y = URL::HTTP.new("https://x").get\ny\n))
+check.("compiled-source chain -> Response ", fat.(d, :y, "y\n"), "URL::Response")
+
+# compiled VALUE constant facts: the constant itself, and indexing it
+d = doc(%(k = URL::KNOWN\nk\n))
+check.("compiled const -> its value class ", fat.(d, :k, "k\n"), "Array")
+d = doc(%(s = URL::KNOWN[0]\ns\n))
+check.("compiled const[i] -> member union ", fat.(d, :s, "s\n"), "String")
+
+# raise arms never poison a proven return
+d = doc(%(def pick(f)\n  return 1 if f\n  raise "nope"\nend\n))
+check.("raise arm contributes no type     ", ti.infer_return(find_def(d, :pick), d, nil, 0), "Integer")
+
 puts fail_count.zero? ? "\nall green" : "\n#{fail_count} FAILED"
 exit(fail_count.zero? ? 0 : 1)

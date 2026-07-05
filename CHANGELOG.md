@@ -57,6 +57,21 @@ what mruby "usually" has.
   subtract across earlier branches and in `else`), and truthiness tests
   (dropping `NilClass`/`FalseClass`). Reassignment between guard and use
   cancels narrowing; a guard that would empty the union is ignored.
+- **Annotation-free dispatch-table factories.** The Reflector captures every
+  compiled value constant's VALUE facts off the live VM at populate (its
+  class; for a Hash/Array, each member's class — a new dumb bridge op,
+  `const_classes`). Combined with Stage 2.6 — inferring a compiled Ruby
+  method's return type from its RECORDED source AST when annotation, irep and
+  clangd all come up empty — the `URL(uri)` idiom types itself:
+  `SCHEME_CLIENTS[scheme].new` returns the union of the classes the BUILD put
+  in the hash (gated, uncompiled protocols aren't in it), `URL("https://…")`
+  carries that union through the private `Kernel#URL` (bare calls now reach
+  private methods, like the runtime does), and names inferred inside a
+  compiled file are qualified through that file's nesting (`Response` inside
+  `class URL` → `URL::Response`). `is_a?` narrowing now honors real VM
+  ancestry (guarding on a parent class keeps/drops subclass members), `raise`
+  arms contribute no return type, and `CONST[i]` on a compiled container of
+  instances types as the member-class union.
   C constructors that return a **fresh instance of their receiver class**
   (`IO.for_fd` → `IO`, `File.for_fd` → `File`) are inferred from the clangd AST —
   including when the fresh object is handed back through one or more helper

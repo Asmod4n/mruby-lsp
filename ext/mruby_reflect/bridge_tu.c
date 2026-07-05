@@ -85,6 +85,11 @@ static VALUE m_source_location(VALUE self, VALUE cls, VALUE meth) {
   return materialize(mrb_bridge_source_location(r->h, RSTRING_PTR(cls), RSTRING_LEN(cls),
                                                 RSTRING_PTR(meth), RSTRING_LEN(meth)));
 }
+static VALUE m_const_classes(VALUE self, VALUE cls, VALUE name) {
+  reflect_t *r = unwrap(self); Check_Type(cls, T_STRING); Check_Type(name, T_STRING);
+  return materialize(mrb_bridge_const_classes(r->h, RSTRING_PTR(cls), RSTRING_LEN(cls),
+                                              RSTRING_PTR(name), RSTRING_LEN(name)));
+}
 static VALUE m_singleton_source_location(VALUE self, VALUE cls, VALUE meth) {
   reflect_t *r = unwrap(self); Check_Type(cls, T_STRING); Check_Type(meth, T_STRING);
   return materialize(mrb_bridge_singleton_source_location(r->h, RSTRING_PTR(cls), RSTRING_LEN(cls),
@@ -136,6 +141,7 @@ void Init_mruby_reflect(void) {
   rb_define_method(c, "anchor_addr", m_anchor_addr, 0);
   rb_define_method(c, "platform", m_platform, 0);
   rb_define_method(c, "net_schema", m_net_schema, 1);
+  rb_define_method(c, "const_classes", m_const_classes, 2);
   rb_define_method(c, "source_location", m_source_location, 2);
   rb_define_method(c, "singleton_source_location", m_singleton_source_location, 2);
   rb_define_method(c, "return_type", m_return_type, 2);

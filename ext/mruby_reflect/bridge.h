@@ -26,6 +26,8 @@ vb_value *mrb_bridge_anchor_addr(void *h);
 vb_value *mrb_bridge_platform(void *h);  /* [Platform::OS, Platform::Toolchain] or NULL */
 vb_value *mrb_bridge_net_schema(void *h, const char *cls, size_t clen);  /* {:@ivar=>[Class,...]} Hash or NULL (mruby-native-ext-type) */
 
+vb_value *mrb_bridge_const_classes(void *h, const char *cls, size_t clen,
+                                   const char *name, size_t nlen); /* [flags, own, [member,...]] or NULL */
 vb_value *mrb_bridge_source_location(void *h, const char *cls, size_t clen,
                                      const char *meth, size_t mlen);
 vb_value *mrb_bridge_return_type(void *h, const char *cls, size_t clen,

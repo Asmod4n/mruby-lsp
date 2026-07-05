@@ -104,9 +104,21 @@ its API once in its own mrblib and every project that builds it gets typed
 chains — no buffer needs to be open, and an annotation added after the last
 build is picked up immediately.
 
-For a **local** whose right-hand side can't be inferred — typically a factory
-that returns a different class per input (`URL(uri)` dispatches on the scheme;
-no static analysis can know that, and mruby-lsp never evals) — pin it with a
+**Dispatch-table factories type themselves.** A compiled factory of the
+common shape — a constant hash of classes indexed and constructed
+(`SCHEME_CLIENTS[scheme].new`, the `URL(uri)` idiom) — needs NO annotation:
+the server reads the factory's recorded source (the same file access `#:`
+reading uses) and asks the **live VM** what classes that constant actually
+holds, so `URL("https://…")` types as the union of exactly the protocol
+classes your libcurl was built with (a gated class that wasn't compiled isn't
+in the hash, so it isn't in the union). `is_a?` guards narrow through real VM
+ancestry (`x.is_a?(URL::Transfer)` keeps/drops the ftp-family subclasses
+correctly), and compiled value constants type as their value's class. More
+generally, a compiled Ruby method with no annotation and no irep type now
+infers its return from its own recorded source, including through `raise`
+arms (which contribute no return type).
+
+For a **local** whose right-hand side still can't be inferred, pin it with a
 steep-style trailing comment; the pin wins over inference:
 
 ```ruby
