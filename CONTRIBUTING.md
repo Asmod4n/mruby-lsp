@@ -69,6 +69,22 @@ falls back to an equivalent in-Rakefile copy that preserves mtimes.
 
 ## Tests
 
+**Setup first — the suite does not run on a bare Ruby.** The overlay tests need
+the runtime gems mruby-lsp itself uses (current `prism`, `rbs`, …), which a
+distro/default Ruby is usually missing or ships too old (a default `prism`
+predates node classes we depend on and fails with `uninitialized constant`).
+Install them the same way a user would, and put the gem bindir on `PATH`:
+
+```bash
+rake install                                   # builds + installs the gems (fetches deps)
+export PATH="$(ruby -e 'print Gem.bindir'):$PATH"
+```
+
+`test/overlay/mruby_semantics_test.rb` additionally needs **mruby head** built
+somewhere (`git clone https://github.com/mruby/mruby && cd mruby && rake`);
+point the test at the binary with `MRUBY=/path/to/mruby/build/host/bin/mruby`
+(default: `/tmp/mruby/build/host/bin/mruby`).
+
 ```bash
 cd test/overlay && for t in *_test.rb; do ruby "$t"; done   # unit (prism-only)
 cd editors/vscode && npm test                               # extension + debug adapter
