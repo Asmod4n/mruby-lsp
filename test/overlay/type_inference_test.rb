@@ -94,9 +94,12 @@ check.("literal receiver basic_type       ", Completion.receiver_type(call_named
 d = doc(%(class Widget\n  def label; 7; end\nend\nw = Widget.new\nx = w.label\n))
 check.("Stage 1 buffer def wins over VM   ", ti.infer_call(call_named(d, :label), d, idx), "Integer")
 
-# branch in a buffer def -> unsound -> nil (never guess)
+# branch in a buffer def with every arm proven -> their union (still no guess:
+# the union IS what the body says); any unknown arm -> nil, as ever
 d = doc(%(class Widget\n  def label; rand > 0.5 ? "a" : 1; end\nend\nx = Widget.new.label\n))
-check.("branching buffer def -> nil       ", ti.infer_call(call_named(d, :label), d, idx), nil)
+check.("branching buffer def -> union     ", ti.infer_call(call_named(d, :label), d, idx), "Integer | String")
+d = doc(%(class Widget\n  def label; rand > 0.5 ? "a" : via; end\nend\nx = Widget.new.label\n))
+check.("branch w/ unknown arm -> nil      ", ti.infer_call(call_named(d, :label), d, idx), nil)
 
 # ── B. dynamism: an edit in ANOTHER open tab is reflected (overlay twin wins) ──
 

@@ -38,8 +38,25 @@ what mruby "usually" has.
   precedence.
 - **Trailing local pins** (steep-style): `api = URL("…") #: URL::HTTP` types a
   local whose right-hand side is statically unknowable (per-input factory
-  dispatch). The pin wins over inference; only a bare class name is accepted —
-  a union or generic resolves to nothing rather than a guess.
+  dispatch). The pin wins over inference; a bare class name or a union of them
+  is accepted — a generic resolves to nothing rather than a guess.
+- **Union types.** A method whose branches all provably return different
+  classes types as their union (`Integer | String`) instead of unknown; any
+  unproven branch still means unknown — unions never contain guesses, and
+  there is no width cap. Producers: buffer-def return inference, RBS-style
+  `#:` union annotations (`-> (A | B)`, the escape hatch for C methods and
+  per-input factories), trailing local pins, mixed `rescue A, B => e` lists,
+  alternation patterns (`in A | B => x`), disagreeing (proven) `yield` sites,
+  and mixed-element literal collections. Hover renders the union with a
+  definition link per member; completion on a union receiver offers only the
+  **intersection** of the members' visible methods. Control-flow guards
+  narrow a union back to single classes at the use site: `is_a?`/`kind_of?`/
+  `instance_of?` in `if`/`unless` (both branches, and the early-exit
+  `return/next/break/raise … if` forms for the rest of the scope),
+  `case/when` and `case/in` class conditions (intersect in the branch,
+  subtract across earlier branches and in `else`), and truthiness tests
+  (dropping `NilClass`/`FalseClass`). Reassignment between guard and use
+  cancels narrowing; a guard that would empty the union is ignored.
   C constructors that return a **fresh instance of their receiver class**
   (`IO.for_fd` → `IO`, `File.for_fd` → `File`) are inferred from the clangd AST —
   including when the fresh object is handed back through one or more helper

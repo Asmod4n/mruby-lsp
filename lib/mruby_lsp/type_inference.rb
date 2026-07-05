@@ -4,6 +4,7 @@ require "prism"
 require_relative "inline_type"
 require_relative "c_return_type"
 require_relative "block_params"
+require_relative "union_type"
 
 module MrubyLsp
   # Local-variable + method-return type inference. All paths funnel through
@@ -159,25 +160,33 @@ module MrubyLsp
       # (`each do |e|`, `_1`, `it`). The latest of write-vs-binding wins, the
       # same last-one-reaches rule writes already follow.
       bind = nearest_binding(scope, name.to_sym, usage_offset, document, index, depth)
+      type = anchor = nil
       if bind && (write.nil? || write.location.end_offset < bind[0])
-        return bind[1]
-      end
-      if write && write.value
+        type = bind[1]
+        anchor = bind[0]
+      elsif write && write.value
         # A steep-style trailing annotation on the assignment line pins the
         # local: `api = URL("https://…") #: URL::HTTP`. The hand-written pin
         # WINS over RHS inference — it exists exactly for factories that
         # dispatch to different classes (URL()), whose single return type is
         # not inferable and never will be.
         ann = trailing_annotation(document, write.location.start_line)
-        return ann if ann
-        return type_of(write.value, document, index, depth + 1)
+        type = ann || type_of(write.value, document, index, depth + 1)
+        anchor = write.location.end_offset
+      else
+        # No assignment reaches this use, so `name` may be a method parameter. A
+        # param has no LocalVariableWriteNode; its type, if any, comes from the
+        # enclosing def's inline annotation (#: (...) -> ...). A later
+        # reassignment would have been found above and rightly wins over the
+        # annotation. Anchor 0: every guard in scope stands between a param's
+        # birth and this use.
+        type = param_type_from_annotation(name, usage_offset, document)
+        anchor = 0
       end
-
-      # No assignment reaches this use, so `name` may be a method parameter. A
-      # param has no LocalVariableWriteNode; its type, if any, comes from the
-      # enclosing def's inline annotation (#: (...) -> ...). A later reassignment
-      # would have been found above and rightly wins over the annotation.
-      param_type_from_annotation(name, usage_offset, document)
+      # A union collapses back toward a single class through the control-flow
+      # guards that dominate this use. Single types skip this entirely -- the
+      # monomorphic fast path is byte-for-byte the pre-union behavior.
+      narrow_union(type, name.to_sym, anchor, usage_offset, scope)
     end
 
     # Map a parameter to its annotated class: find the enclosing def, the param's
@@ -272,6 +281,155 @@ module MrubyLsp
         found = node if found.nil? || node.location.end_offset > found.location.end_offset
       end
       found
+    end
+
+    # ---- union narrowing: control-flow guards between write and use ----------
+    # A union type ("A | B") collapses back toward a single class through the
+    # guards that PROVABLY dominate the use site -- pure AST shape + location
+    # arithmetic, nothing evaluated. Only guards AFTER the type's anchor (the
+    # reaching write/binding) count, so a reassignment between guard and use
+    # cancels narrowing for free. A guard that would empty the union is
+    # dropped (fall back to the unnarrowed type -- a contradiction is not
+    # license to guess). Class-pattern and case/when semantics cannot be
+    # monkey-patched in mruby; is_a?/kind_of?/instance_of? redefinition would
+    # lie to us the same way it lies to every reader of the code.
+
+    ISA_TESTS = %i[is_a? kind_of? instance_of?].freeze
+    FALSY = "FalseClass | NilClass"
+
+    def narrow_union(type, name, anchor, usage_offset, scope)
+      return type unless UnionType.union?(type)
+      guards = [] # [predicate_offset, :intersect | :subtract, classes]
+      pruned_walk(scope) do |node|
+        case node
+        when Prism::IfNode, Prism::UnlessNode
+          if_guard(node, name, anchor, usage_offset, guards)
+        when Prism::CaseNode
+          case_guard(node, name, anchor, usage_offset, guards)
+        when Prism::CaseMatchNode
+          case_match_guard(node, name, anchor, usage_offset, guards)
+        end
+      end
+      guards.sort_by!(&:first)
+      guards.reduce(type) do |t, (_, op, classes)|
+        n = op == :intersect ? UnionType.intersect(t, classes) : UnionType.subtract(t, classes)
+        n || t
+      end
+    end
+
+    def within?(loc, offset) = offset >= loc.start_offset && offset <= loc.end_offset
+
+    # What an if/unless PREDICATE proves about `name`: [:isa, "K"] for
+    # name.is_a?(K) / kind_of? / instance_of?, [:truthy] for a bare `name`
+    # test, nil when the predicate says nothing usable about it.
+    def guard_test(pred, name)
+      case pred
+      when Prism::LocalVariableReadNode
+        [:truthy] if pred.name == name
+      when Prism::CallNode
+        return nil unless ISA_TESTS.include?(pred.name)
+        recv = pred.receiver
+        return nil unless recv.is_a?(Prism::LocalVariableReadNode) && recv.name == name
+        args = pred.arguments&.arguments
+        return nil unless args && args.size == 1
+        k = constant_node_name(args.first)
+        k && [:isa, k]
+      end
+    end
+
+    def if_guard(node, name, anchor, usage_offset, guards)
+      pred = node.predicate
+      return unless pred && pred.location.start_offset >= anchor
+      kind, classes = guard_test(pred, name)
+      return unless kind
+      # What holds when the test PASSES / FAILS:
+      pass = kind == :isa ? [:intersect, classes] : [:subtract, FALSY]
+      fail_ = kind == :isa ? [:subtract, classes] : [:intersect, FALSY]
+      pass, fail_ = fail_, pass if node.is_a?(Prism::UnlessNode)
+      off = pred.location.start_offset
+      # if carries `subsequent` (else/elsif), unless carries `else_clause`.
+      alt = node.is_a?(Prism::IfNode) ? node.subsequent : node.else_clause
+      if node.statements && within?(node.statements.location, usage_offset)
+        guards << [off, *pass]
+      elsif alt && within?(alt.location, usage_offset)
+        # else -- or an elsif chain, whose own predicate is collected when the
+        # walk reaches the inner IfNode; this test's failure still holds there.
+        guards << [off, *fail_]
+      elsif usage_offset >= node.location.end_offset && alt.nil? &&
+            terminates?(node.statements)
+        # `return x if x.is_a?(K)` (also next/break/raise): falling past the
+        # guard proves the test FAILED for the remainder of the scope.
+        guards << [off, *fail_]
+      end
+    end
+
+    # Does this branch body unconditionally leave the scope? (Last statement is
+    # return/next/break or a bare raise.) Location arithmetic needs nothing
+    # more: anything fancier simply doesn't narrow.
+    def terminates?(stmts)
+      last = stmts.is_a?(Prism::StatementsNode) ? stmts.body.last : stmts
+      case last
+      when Prism::ReturnNode, Prism::NextNode, Prism::BreakNode then true
+      when Prism::CallNode then last.receiver.nil? && last.name == :raise
+      else false
+      end
+    end
+
+    # case x; when A ...: inside a branch whose conditions are all constants,
+    # x IS one of them (class === cannot be repointed in mruby); reaching a
+    # later branch/else proves every earlier constant condition did NOT match.
+    def case_guard(node, name, anchor, usage_offset, guards)
+      pred = node.predicate
+      return unless pred.is_a?(Prism::LocalVariableReadNode) && pred.name == name
+      return unless pred.location.start_offset >= anchor
+      off = pred.location.start_offset
+      missed = []
+      node.conditions.each do |w|
+        consts = w.conditions.map { |c| constant_node_name(c) }
+        if w.statements && within?(w.statements.location, usage_offset)
+          missed.each { |k| guards << [off, :subtract, k] }
+          guards << [off, :intersect, UnionType.of(consts)] if consts.all?
+          return
+        end
+        missed.concat(consts.compact)
+      end
+      return unless node.else_clause && within?(node.else_clause.location, usage_offset)
+      missed.each { |k| guards << [off, :subtract, k] }
+    end
+
+    # case x; in A ...: same facts as case/when for plain class patterns
+    # (including alternations of them). Captures (`in A => e`) already type
+    # their own variable via nearest_binding; this narrows the SUBJECT.
+    def case_match_guard(node, name, anchor, usage_offset, guards)
+      pred = node.predicate
+      return unless pred.is_a?(Prism::LocalVariableReadNode) && pred.name == name
+      return unless pred.location.start_offset >= anchor
+      off = pred.location.start_offset
+      missed = []
+      node.conditions.each do |cond|
+        next unless cond.is_a?(Prism::InNode)
+        k = pattern_class_names(cond.pattern)
+        if cond.statements && within?(cond.statements.location, usage_offset)
+          missed.each { |m| guards << [off, :subtract, m] }
+          guards << [off, :intersect, k] if k
+          return
+        end
+        missed << k if k
+      end
+      return unless node.else_clause && within?(node.else_clause.location, usage_offset)
+      missed.each { |m| guards << [off, :subtract, m] }
+    end
+
+    # The class name(s) a PLAIN class pattern tests for: a constant, or an
+    # alternation of them ("A | B"). Anything with structure/captures -> nil
+    # (it may prove more than a class; we only narrow on what's certain).
+    def pattern_class_names(pat)
+      case pat
+      when Prism::ConstantReadNode, Prism::ConstantPathNode
+        constant_node_name(pat)
+      when Prism::AlternationPatternNode
+        UnionType.of([pattern_class_names(pat.left), pattern_class_names(pat.right)])
+      end
     end
 
     # ---- binding sites: pattern captures + block parameters ------------------
@@ -406,9 +564,11 @@ module MrubyLsp
       when Prism::ArrayPatternNode, Prism::FindPatternNode then "Array"
       when Prism::HashPatternNode then "Hash"
       when Prism::AlternationPatternNode
+        # `in Integer | String => n`: the match proves n is one of the two --
+        # exactly a union. Either side unknown -> nil, as everywhere.
         l = pattern_value_type(value.left, document, index, depth)
         r = pattern_value_type(value.right, document, index, depth)
-        l == r ? l : nil
+        UnionType.of([l, r].uniq)
       when Prism::PinnedVariableNode
         type_of(value.variable, document, index, depth + 1)
       when Prism::PinnedExpressionNode
@@ -417,8 +577,11 @@ module MrubyLsp
     end
 
     # A steep-style trailing `#: Type` comment on `line`, as a bare constant
-    # path, or nil. Only a plain class name is accepted (no unions, no
-    # generics) — the pin names ONE receiver class or it names nothing.
+    # path or a union of them (`#: URL::HTTP | URL::Transfer`), or nil. Each
+    # alternative must be a plain class name (no generics); one bad segment
+    # rejects the whole pin. The union form exists exactly for factories that
+    # dispatch to different classes per argument value -- their return can
+    # never be inferred, only declared.
     def trailing_annotation(document, line)
       return nil unless document.respond_to?(:ast)
       ast = document.ast
@@ -427,7 +590,10 @@ module MrubyLsp
       return nil unless c
       raw = c.location.slice.strip
       return nil unless raw.start_with?("#:")
-      constant_path_token(raw.delete_prefix("#:").strip)
+      # Fixed-delimiter split of our own annotation grammar -- not structured
+      # input, same footing as the "::" split below.
+      segs = raw.delete_prefix("#:").split("|").map { |s| constant_path_token(s.strip) }
+      UnionType.of(segs)
     end
 
     # `s` when it is a bare constant path (Foo, URL::HTTP), else nil. A hand
@@ -445,14 +611,15 @@ module MrubyLsp
     end
 
     # The class a rescue clause proves about its bound variable: the single
-    # (uniform) listed exception class, or StandardError for a bare rescue.
-    # Mixed classes -> nil (a union has no single receiver -- never guess).
+    # (uniform) listed exception class, StandardError for a bare rescue, or the
+    # UNION of a mixed class list -- `rescue IOError, ArgumentError => e` proves
+    # e is exactly one of those. A non-constant entry (splatted list) -> nil.
     def rescue_class(resc)
       return "StandardError" if resc.exceptions.empty?
       names = resc.exceptions.map do |x|
         Completion.basic_type(x) if x.is_a?(Prism::ConstantReadNode) || x.is_a?(Prism::ConstantPathNode)
       end
-      names.uniq.size == 1 ? names.first : nil
+      UnionType.of(names.uniq)
     end
 
     # The single type of a LITERAL range's endpoints ((1..9) -> Integer), nil
@@ -505,7 +672,8 @@ module MrubyLsp
       BlockParams.collect_yields(defn.body, blk, yields)
       return nil if yields.empty?
       types = yields.map { |args| args[pos] && type_of(args[pos], document, index, depth + 1) }.uniq
-      types.size == 1 ? types.first : nil
+      # All yield sites proven -> their union (one site stays a bare name).
+      UnionType.of(types)
     end
 
     # Core iteration methods that yield the collection's ELEMENT first. These
@@ -581,7 +749,9 @@ module MrubyLsp
     def uniform_type(nodes, document, index, depth)
       return nil if nodes.empty?
       types = nodes.map { |n| type_of(n, document, index, depth + 1) }.uniq
-      types.size == 1 ? types.first : nil
+      # Every element proven -> the element type is their union ([1, "a"] yields
+      # Integer | String); a single type stays a bare name, unknowns stay nil.
+      UnionType.of(types)
     end
 
     # Follow a receiver back to a literal collection node in this buffer:
@@ -818,8 +988,11 @@ module MrubyLsp
       return ann if ann
       term = terminal_exprs(defn.body).map { |e| e.nil? ? nil : type_of(e, document, index, depth + 1) }
       types = (term + return_types(defn, document, index, depth)).uniq
-      return nil if types.empty?
-      types.size == 1 ? types.first : nil
+      # Every terminal proven -> keep the whole set as a union ("A | B") instead
+      # of collapsing to unknown; one type stays a bare name (fast path). ANY
+      # unknown terminal still poisons the whole return -- unions hold proven
+      # members only, never "these, plus something we couldn't type".
+      UnionType.of(types)
     end
 
     def terminal_exprs(node)

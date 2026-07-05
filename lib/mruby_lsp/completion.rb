@@ -184,6 +184,7 @@ module MrubyLsp
       # (Foo.bar). But a VALUE constant (HEX_CHARS = "...") is an instance of its
       # value's type -> instance methods. Any other receiver (literal, Foo.new, a
       # typed local) is an instance.
+      union = nil
       if recv.is_a?(Prism::ConstantReadNode) || recv.is_a?(Prism::ConstantPathNode)
         vt = TypeInference.infer_constant(recv, document, index)
         if vt
@@ -192,7 +193,12 @@ module MrubyLsp
           klass = basic_type(recv); owner = nil  # class constant -> class methods
         end
       else
-        klass = nil; owner = receiver_type(recv, document, index)
+        klass = nil
+        raw = raw_receiver_type(recv, document, index)
+        owner = TypeInference.concrete_receiver(raw)
+        # A UNION receiver has no single owner but is not unknown: completion
+        # offers the intersection of its members' methods (below).
+        union = raw if UnionType.union?(raw)
       end
       # Inferred names are as WRITTEN (`TagDSL`), index entries are canonical
       # (`CBOR::TagDSL`) -- resolve through the cursor's nesting, exactly like a
@@ -213,6 +219,12 @@ module MrubyLsp
         elsif owner
           # Known instance receiver: its visible instance methods (own + inherited).
           index.visible_methods(owner)
+        elsif union
+          # Union receiver: the INTERSECTION of the members' visible methods --
+          # every offered method exists no matter which member the value is at
+          # runtime. Methods on only some members are never listed (a
+          # diagnostic's job, not completion's).
+          union_method_entries(union, nesting, index)
         elsif recv.nil? && !nesting.empty?
           # Bare prefix inside a class/module: offer that class's visible methods
           # (own + inherited via the VM MRO) plus true globals — anchored to the
@@ -389,6 +401,22 @@ module MrubyLsp
       entries && !entries.empty? ? entries.first.name : name
     end
 
+    # Visible instance methods a UNION receiver is guaranteed to have: those
+    # present on EVERY member (queried per member against the VM, intersected
+    # by bare method name). Entries come from the first member's list, so
+    # params/docs/tiering follow that member -- the method itself is proven on
+    # all of them. A member the VM knows nothing about empties the offer:
+    # "can't prove it exists everywhere" means don't list it.
+    def union_method_entries(union, nesting, index)
+      lists = UnionType.members(union).map do |m|
+        m = TypeInference.concrete_receiver(m)
+        m = resolve_owner(m, nesting, index) if m
+        m ? index.visible_methods(m) : []
+      end
+      shared = lists.map { |l| l.map { |e| method_name(e.name) }.uniq }.reduce(:&)
+      lists.first.select { |e| shared.include?(method_name(e.name)) }
+    end
+
     # sortText "00_" puts locals above every method tier; kind 6 = Variable.
     def local_item(name, range)
       item = { label: name, kind: 6, sortText: "00!#{name}",
@@ -475,9 +503,17 @@ module MrubyLsp
       # narrows here (String? -> String): every caller -- completion, hover,
       # definition, signature help, scope resolution -- looks methods up on the
       # result, and you never dispatch on the nil arm. A real union -> nil (no
-      # single receiver). Bare types pass through. Hover-over-a-variable shows the
-      # full type via infer_local directly, not through here.
-      TypeInference.concrete_receiver(
+      # single receiver; completion alone goes around this via
+      # raw_receiver_type and intersects). Bare types pass through.
+      # Hover-over-a-variable shows the full type via infer_local directly,
+      # not through here.
+      TypeInference.concrete_receiver(raw_receiver_type(receiver, document, index))
+    end
+
+    # The receiver's inferred type BEFORE the single-receiver collapse: a bare
+    # class name, a nilable ("String?"), a union ("A | B"), or nil.
+    def raw_receiver_type(receiver, document = nil, index = nil)
+      (
         basic_type(receiver) ||
           (if document
              case receiver

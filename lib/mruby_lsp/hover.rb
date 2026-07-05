@@ -27,6 +27,14 @@ module MrubyLsp
       heredoc = heredoc_message(result.node)
       return { contents: { kind: "markdown", value: heredoc } } if heredoc
 
+      # A union-typed variable has no ONE class entry to expand/enrich, so it
+      # renders directly: the union as the title (that sentence is what the
+      # build proves; any single class would be a lie), one Definitions link
+      # per member the index resolves. Single-typed variables never enter this
+      # path -- byte-for-byte the pre-union pipeline below.
+      union = union_hover(result.node, index, result.nesting || [], document)
+      return { contents: { kind: "markdown", value: union } } if union
+
       entries = resolve_entries(result.node, index, result.nesting || [], document, result)
       return nil if entries.empty?
       # Lazy native locations/docs: resolve addr2line+RDoc for exactly these
@@ -134,6 +142,32 @@ module MrubyLsp
         "This is a heredoc definition using the `#{delim}` delimiter. " \
           "Indentation will be considered part of the string."
       end
+    end
+
+    # Markdown for a UNION-typed local (nil for everything else, including all
+    # single types). Mirrors the local-variable arm of resolve_entries: write
+    # nodes type from their own RHS (pin wins), reads walk back via infer_local.
+    def union_hover(node, index, nesting, document)
+      return nil unless document
+      type =
+        case node
+        when Prism::LocalVariableWriteNode
+          if node.value
+            TypeInference.trailing_annotation(document, node.location.start_line) ||
+              TypeInference.type_of(node.value, document, index, 0)
+          end
+        when Prism::LocalVariableReadNode, Prism::LocalVariableTargetNode
+          TypeInference.infer_local(node.name, node.location.start_offset, document, index)
+        when Prism::ItLocalVariableReadNode
+          TypeInference.infer_local(:it, node.location.start_offset, document, index)
+        end
+      return nil unless UnionType.union?(type)
+      links = UnionType.members(type).flat_map do |m|
+        ScopeResolver.constant(m, nesting, index).filter_map { |e| definition_link(index.enrich(e)) }
+      end
+      out = +"```ruby\n#{type}\n```"
+      out << "\n\n**Definitions**: #{links.join(' | ')}" unless links.empty?
+      out
     end
 
     def resolve_entries(node, index, nesting = [], document = nil, result = nil)

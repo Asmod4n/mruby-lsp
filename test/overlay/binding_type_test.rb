@@ -62,7 +62,7 @@ d = D(%(case v\nin /x/ => m then m\nend\n))
 check.("regexp pattern matches String",         at.(d, :m), "String")
 
 d = D(%(case v\nin Integer | Float => x then x\nend\n))
-check.("alternation of two types  -> nil",      at.(d, :x), nil)
+check.("alternation of two types  -> union",    at.(d, :x), "Float | Integer")
 
 d = D(%(HEX = "abc"\ncase v\nin HEX => s then s\nend\n))
 check.("value-constant pattern    -> String",   at.(d, :s), "String")
@@ -84,17 +84,19 @@ check.("write after binding wins  -> String",   at.(d, :x, "x\n"), "String")
 d = D(%(def each_widget\n  yield Widget.new\nend\neach_widget do |w|\n  w\nend\n))
 check.("buffer def yield          -> Widget",   at.(d, :w, "w\nend"), "Widget")
 
-# two agreeing yields -> the type; disagreeing yields -> nil
+# two agreeing yields -> the type; disagreeing (proven) yields -> their union
 d = D(%(def pick\n  yield 1\n  yield 2\nend\npick { |n| n }\n))
 check.("agreeing yields           -> Integer",  at.(d, :n, "n }"), "Integer")
 d = D(%(def pick\n  yield 1\n  yield "s"\nend\npick { |n| n }\n))
-check.("disagreeing yields        -> nil",      at.(d, :n, "n }"), nil)
+check.("disagreeing yields        -> union",    at.(d, :n, "n }"), "Integer | String")
+d = D(%(def pick\n  yield 1\n  yield foo\nend\npick { |n| n }\n))
+check.("yield w/ unknown site     -> nil",      at.(d, :n, "n }"), nil)
 
 # literal receivers
 d = D(%([1, 2, 3].each do |e|\n  e\nend\n))
 check.("[Int].each |e|            -> Integer",  at.(d, :e, "e\nend"), "Integer")
 d = D(%([1, "a"].each { |e| e }\n))
-check.("mixed array elements      -> nil",      at.(d, :e, "e }"), nil)
+check.("mixed array elements      -> union",    at.(d, :e, "e }"), "Integer | String")
 d = D(%(xs = ["a", "b"]\nxs.map { |s| s }\n))
 check.("local <- [Str], .map |s|  -> String",   at.(d, :s, "s }"), "String")
 d = D(%(NAMES = ["a"]\nNAMES.each { |s| s }\n))

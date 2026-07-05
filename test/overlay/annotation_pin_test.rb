@@ -35,7 +35,7 @@ check.("rescue A::B => e          -> A::B",          at.(d, :e, "e\nend"), "URL:
 d = D(%(begin\n  work\nrescue => e\n  e\nend\n))
 check.("bare rescue => e          -> StandardError", at.(d, :e, "e\nend"), "StandardError")
 d = D(%(begin\n  work\nrescue KeyError, TypeError => e\n  e\nend\n))
-check.("mixed rescue list         -> nil",           at.(d, :e, "e\nend"), nil)
+check.("mixed rescue list         -> union",         at.(d, :e, "e\nend"), "KeyError | TypeError")
 d = D(%(begin\n  work\nrescue KeyError, KeyError => e\n  e\nend\n))
 check.("uniform rescue list       -> the class",     at.(d, :e, "e\nend"), "KeyError")
 
@@ -59,7 +59,9 @@ check.("non-constant pin          -> nil",           at.(d, :api, "api\n"), nil)
 d = D(%(api = "s" #: SomeClass\napi\n))
 check.("pin WINS over inference   -> SomeClass",     at.(d, :api, "api\n"), "SomeClass")
 d = D(%(api = URL("x") #: A | B\napi\n))
-check.("union pin                 -> nil",           at.(d, :api, "api\n"), nil)
+check.("union pin                 -> union",         at.(d, :api, "api\n"), "A | B")
+d = D(%(api = URL("x") #: A | not a type\napi\n))
+check.("union pin w/ bad segment  -> nil",           at.(d, :api, "api\n"), nil)
 
 # ── D. `#:` on a compiled method, read from its source (Stage 2.5) ───────────
 def m(owner, name, uri:, line:, rt: nil, singleton: false)

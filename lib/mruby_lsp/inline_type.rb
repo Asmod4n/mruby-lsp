@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rbs"
+require_relative "union_type"
 
 module MrubyLsp
   # Inline method-type annotations -- parsed by rbs, not by us. We own no parser.
@@ -48,12 +49,17 @@ module MrubyLsp
       nil
     end
 
-    # The class name of a single rbs type for the resolver to look up against the
-    # VM, or nil when there is nothing concrete (void, untyped, a union, a
-    # singleton, an optional, ...). Only a plain class instance yields a name:
-    # "::Foo" -> "::Foo", "Array[X]" -> "Array", everything else -> nil -> untyped.
+    # The class name of an rbs type for the resolver to look up against the
+    # VM, or nil when there is nothing concrete (void, untyped, a singleton, an
+    # optional, ...). A plain class instance yields its name ("::Foo" -> "::Foo",
+    # "Array[X]" -> "Array"); a union of plain class instances yields the union
+    # type ("(A | B)" -> "A | B", every member proven or the whole thing is nil).
     def class_name_of(type)
-      type.is_a?(RBS::Types::ClassInstance) ? type.name.to_s : nil
+      case type
+      when RBS::Types::ClassInstance then type.name.to_s
+      when RBS::Types::Union
+        UnionType.of(type.types.map { |t| class_name_of(t) })
+      end
     end
 
     # The return type's class name. "(Integer) -> ::Foo" -> "::Foo".

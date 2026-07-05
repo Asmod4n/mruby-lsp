@@ -93,8 +93,10 @@ int_to_hex(mrb_state *mrb, mrb_value self)
 
 In Ruby the annotation types both the parameters (a param used as a receiver
 completes and jumps as its annotated class) and the return value; in C it sets
-the return type that drives typing of chained calls. Anything not concrete
-(`void`, `untyped`, a union) is ignored, so inference still runs.
+the return type that drives typing of chained calls. A union of plain classes
+(`-> (Pq::Result | Pq::Result::Error)`) is kept as a union type (see below);
+anything not concrete (`void`, `untyped`, generics) is ignored, so inference
+still runs.
 
 `#:` works on **compiled methods too**: the server reads the line above a VM
 method's `def` from the source file the build recorded, so a gem can annotate
@@ -112,12 +114,28 @@ api = URL("https://example.com") #: URL::HTTP
 api.get        # completes/hovers as URL::HTTP
 ```
 
-Only a bare class name is accepted (no unions, no generics) — the pin names
-one receiver class or it names nothing. Also inferred without any annotation:
-`rescue SomeError => e` types `e` from the rescue class list (bare `rescue`
-→ StandardError), and the Kernel conversion casts `Array(x)`, `String(x)`,
+A pin is a bare class name or a union of them (`#: URL::HTTP | URL::Transfer`;
+no generics). Also inferred without any annotation: `rescue SomeError => e`
+types `e` from the rescue class list (bare `rescue` → StandardError; a mixed
+list is a union), and the Kernel conversion casts `Array(x)`, `String(x)`,
 `Integer(x)`, `Float(x)`, `Hash(x)`, `Rational(x)`, `Complex(x)` type by
 language definition.
+
+**Union types.** A method whose branches provably return different classes
+types as their union instead of unknown — `def fetch(f); return 1 if f; "s";
+end` returns `Integer | String`. Unions are never a guess: every member is
+proven (AST, annotation, or rescue list), and if *any* branch is unknown the
+whole type stays unknown, as before. Hover shows the union with a definition
+link per member; completion on a union receiver offers **only the
+intersection** of the members' methods (every offered method exists whichever
+member the value is at runtime). Control-flow guards narrow a union back to
+single classes — `x.is_a?(K)` in `if`/`unless` (including the early-return
+`return x if x.is_a?(K)` / `next` / `break` / `raise` forms), `case/when`
+and `case/in` with class conditions, and plain truthiness tests (dropping
+`NilClass`/`FalseClass`) — so after `return res if res.is_a?(Pq::Result::Error)`
+the remainder of the method sees a plain `Pq::Result`, with today's full
+completion/hover. A reassignment between guard and use cancels narrowing, and
+a guard that contradicts the union is ignored rather than trusted.
 
 **Declared instance-variable types.** mruby-lsp builds
 [`mruby-native-ext-type`](https://github.com/Asmod4n/mruby-native-ext-type) into
