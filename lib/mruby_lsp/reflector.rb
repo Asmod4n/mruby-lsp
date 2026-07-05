@@ -278,7 +278,18 @@ module MrubyLsp
     # the build actually put in it, and a compiled value constant (HEX = "...")
     # as its value's class. A reflect .so predating the op -> skip (degrade).
     def record_const_classes(index, name)
-      return unless @reflect.respond_to?(:const_classes)
+      unless @reflect.respond_to?(:const_classes)
+        # A reflect .so older than this Ruby code: degrade (no crash), but say
+        # so ONCE -- silently missing ops made "why is dispatch typing off?"
+        # undiagnosable in the field. Rebuild Now / the update path fixes it.
+        unless @warned_old_so
+          @warned_old_so = true
+          warn "mruby-lsp: the workspace's reflect .so predates const_classes " \
+               "(constant-value reflection off; dispatch-table typing degraded) " \
+               "— rebuild the workspace (mruby-lsp: Rebuild Now)."
+        end
+        return
+      end
       raw = @reflect.const_classes(owner_of(name), name.split("::").last)
       return if mruby_error?(raw) || !raw.is_a?(Array) || raw.size != 3
       flags, own, members = raw

@@ -590,16 +590,30 @@ function workspaceNative(root: string): string | undefined {
 // fallback for a bundle-less dev checkout (no manifest to compare).
 async function maybeRebuildAfterUpdate(context: vscode.ExtensionContext): Promise<void> {
   const all = consentedWorkspaces().map((w) => w.root);
-  if (all.length === 0) return;
+  if (all.length === 0) {
+    output.appendLine("refresh gate: no set-up workspaces — nothing to compare");
+    return;
+  }
 
   const shipped = bundleManifest(context.extensionPath)?.["native"];
   let roots: string[];
   let reason: string;
   if (typeof shipped === "string" && shipped.length > 0) {
-    roots = all.filter((r) => workspaceNative(r) !== shipped);
+    // Log every verdict: a silent gate is undiagnosable in the field ("why
+    // didn't it rebuild?" must be answerable from this output alone).
+    roots = all.filter((r) => {
+      const stamp = workspaceNative(r);
+      const stale = stamp !== shipped;
+      output.appendLine(
+        `refresh gate: ${r} native=${stamp ? stamp.slice(0, 12) : "(none)"} ` +
+          `shipped=${shipped.slice(0, 12)} -> ${stale ? "STALE, will run setup" : "current"}`,
+      );
+      return stale;
+    });
     if (roots.length === 0) return;
     reason = `native code differs from installed builds (${shipped.slice(0, 12)}…)`;
   } else {
+    output.appendLine("refresh gate: no native digest in bundle manifest — falling back to version gate");
     const current = context.extension.packageJSON.version as string;
     const last = context.globalState.get<string>("lastVersion");
     if (last === current) return;

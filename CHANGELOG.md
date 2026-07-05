@@ -157,6 +157,12 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- The workspace-refresh gate **logs its verdict** per workspace on every
+  activation (`refresh gate: <root> native=… shipped=… -> current|STALE`),
+  and the server **warns once** when a workspace's reflect `.so` predates a
+  bridge op the Ruby code wants (degraded, not crashed — but no longer
+  silently). A silent gate made "why didn't it rebuild?" unanswerable from
+  the output panel.
 - The extension's post-install workspace refresh is gated on **content, not
   version**: the bundle manifest's `native` fingerprint is compared per
   consented workspace against the cache's recorded `native.sha256`, and setup
