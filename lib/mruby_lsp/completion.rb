@@ -267,8 +267,18 @@ module MrubyLsp
       # Ranking anchor: an explicit receiver's class, or -- for a bare prefix
       # inside a class body -- the ENCLOSING class (implicit self). Without
       # this, bare completions ranked everything tier 0 and the user's own
-      # methods alphabetically interleaved with Kernel/Object noise.
-      rank_owner = owner || (recv.nil? && !nesting.empty? ? nesting.join("::") : nil)
+      # methods alphabetically interleaved with Kernel/Object noise. A UNION
+      # receiver anchors on its first member: the offered entries come from
+      # that member's list (union_method_entries), so its chain distances are
+      # the consistent ranking -- unanchored, get/post drowned under Object's
+      # operators alphabetically.
+      union_anchor =
+        if union
+          m = TypeInference.concrete_receiver(UnionType.members(union).first)
+          m && resolve_owner(m, nesting, index)
+        end
+      rank_owner = owner || union_anchor ||
+                   (recv.nil? && !nesting.empty? ? nesting.join("::") : nil)
       ranked = matching.map { |e| [klass ? singleton_tier(klass, e) : method_tier(rank_owner, e, index), e] }
       # All definer files along the receiver's chain per item ("string.c,
       # compar.rb, class.c" for ==) -- the redefinition reality in the LIST.

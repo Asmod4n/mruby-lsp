@@ -246,6 +246,26 @@ check.("union flows into the local        ", fat.(d, :x, "x\n"), "URL::FTP | URL
 d = doc(%(x = URL("https://x")\nreturn x if x.is_a?(URL::Transfer)\nx\n))
 check.("ancestry-aware narrowing          ", fat.(d, :x, "x\n"), "URL::HTTP")
 
+# intersecting on a PARENT collapses the surviving family to the guard class
+# (x.is_a?(URL::HTTP) proves exactly that; HTTPS < HTTP adds nothing here),
+# while a SINGLE survivor keeps its more precise self.
+# (fresh index: Stage 2.6 memoizes per entry, so the wider table needs its own)
+gidx = MrubyLsp::Index.new
+%w[Object Kernel BasicObject].each { |c| gidx.set_ancestors(c, [c, "Object", "Kernel", "BasicObject"].uniq) }
+gidx.set_ancestors("URL::HTTP",  %w[URL::HTTP Object Kernel BasicObject])
+gidx.set_ancestors("URL::HTTPS", %w[URL::HTTPS URL::HTTP Object Kernel BasicObject])
+gidx.set_ancestors("URL::FTP",   %w[URL::FTP URL::Transfer Object Kernel BasicObject])
+gidx.add(fm("URL", "call", uri: furi, line: 2, singleton: true))
+gidx.add_private(fm("Kernel", "URL", uri: furi, line: 17))
+gidx.set_const_value("URL::SCHEME_CLIENTS",
+                     own: "Hash", is_class: false,
+                     members: %w[URL::HTTP URL::HTTPS URL::FTP], members_are_classes: true)
+gat = ->(d, name, needle) { ti.infer_local(name.to_sym, d.text.rindex(needle), d, gidx) }
+d = doc(%(x = URL("https://x")\nif x.is_a?(URL::HTTP)\n  x\nend\n))
+check.("parent guard collapses family     ", gat.(d, :x, "x\nend"), "URL::HTTP")
+d = doc(%(x = URL("https://x")\nif x.is_a?(URL::HTTPS)\n  x\nend\n))
+check.("leaf guard keeps precise member   ", gat.(d, :x, "x\nend"), "URL::HTTPS")
+
 # chained through a compiled method: Stage 2.6 infers get's body and QUALIFIES
 # the as-written name through the def's nesting (Response -> URL::Response)
 d = doc(%(y = URL::HTTP.new("https://x").get\ny\n))

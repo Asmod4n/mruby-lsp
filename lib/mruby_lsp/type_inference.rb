@@ -334,7 +334,17 @@ module MrubyLsp
         members = UnionType.members(t)
         kept =
           if op == :intersect
-            members.select { |m| isa_any?(m, classes, index) }
+            survivors = members.select { |m| isa_any?(m, classes, index) }
+            # SEVERAL members surviving one is_a?(K) are K plus descendants --
+            # exactly what the guard proves -- so collapse them to the guard
+            # class: same method surface (descendants inherit it), one clean
+            # receiver instead of a noisy union. A SINGLE survivor stays
+            # itself: it is strictly more precise than the guard.
+            if survivors.size > 1
+              survivors.map { |m| guard_class_for(m, classes, index) }.uniq
+            else
+              survivors
+            end
           else
             members.reject { |m| isa_any?(m, classes, index) }
           end
@@ -348,10 +358,17 @@ module MrubyLsp
     # Class case-equality and ancestry can't be monkey-patched in mruby, which
     # is what keeps this sound.
     def isa_any?(member, classes, index)
-      UnionType.members(classes).any? do |k|
-        member == k ||
-          (index.respond_to?(:ancestors) && index.ancestors(member).to_a.include?(k))
-      end
+      UnionType.members(classes).any? { |k| isa?(member, k, index) }
+    end
+
+    def isa?(member, k, index)
+      member == k ||
+        (index.respond_to?(:ancestors) && index.ancestors(member).to_a.include?(k))
+    end
+
+    # The guard class a surviving member satisfied (for the collapse above).
+    def guard_class_for(member, classes, index)
+      UnionType.members(classes).find { |k| isa?(member, k, index) } || member
     end
 
     def within?(loc, offset) = offset >= loc.start_offset && offset <= loc.end_offset

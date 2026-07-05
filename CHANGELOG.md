@@ -69,9 +69,13 @@ what mruby "usually" has.
   private methods, like the runtime does), and names inferred inside a
   compiled file are qualified through that file's nesting (`Response` inside
   `class URL` → `URL::Response`). `is_a?` narrowing now honors real VM
-  ancestry (guarding on a parent class keeps/drops subclass members), `raise`
-  arms contribute no return type, and `CONST[i]` on a compiled container of
-  instances types as the member-class union.
+  ancestry (guarding on a parent class keeps/drops subclass members — and
+  several surviving members of one family collapse to the guard class itself,
+  so `x.is_a?(URL::HTTP)` reads `URL::HTTP`, not `URL::HTTP | URL::HTTPS`,
+  while a single more-precise survivor stays itself), `raise` arms contribute
+  no return type, `CONST[i]` on a compiled container of instances types as the
+  member-class union, and union completions rank against their first member
+  instead of flat (get/post above the Object operators).
   C constructors that return a **fresh instance of their receiver class**
   (`IO.for_fd` → `IO`, `File.for_fd` → `File`) are inferred from the clangd AST —
   including when the fresh object is handed back through one or more helper
