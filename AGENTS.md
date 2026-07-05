@@ -77,6 +77,15 @@ is incompatible with this premise.
   may be absent or die mid-session; turn the feature off and keep the server
   alive. Users bring their own toolchain — never force-install one.
 
+## Working with the maintainer's reports
+
+When the maintainer reports behavior ("X is empty", "I see strange results"),
+ASSUME the latest delivered patches are applied on their side and debug
+against that state — do not burn a round asking whether they applied them or
+concluding their tree is stale. Only question the applied state when the
+symptom is impossible under the delivered code, and say so explicitly when
+you do. This mistake has been made repeatedly, across repos; don't repeat it.
+
 ## Commits & patches (maintainer preference)
 
 - **Never put a session URL in a commit message.** A `claude.ai/code/session_…`
