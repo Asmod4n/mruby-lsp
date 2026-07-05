@@ -227,7 +227,7 @@ module MrubyLsp
         FileUtils.rm_rf(File.join(cache, "mruby_reflect"))
       end
 
-      step("building libmruby (debug + PIC, into cache) — this can take a few minutes") do
+      build_libmruby = lambda do
         env = {
           "MRUBY_CONFIG"          => wrapper,
           "MRUBY_BUILD_DIR"       => build_dir,          # mruby-native: relocates ALL build artifacts into our cache
@@ -283,16 +283,61 @@ module MrubyLsp
         fail!("mruby build failed (see output above)") unless ok
       end
 
+      step("building libmruby (debug + PIC, into cache) — this can take a few minutes") do
+        build_libmruby.call
+      end
+
       # Locate the produced libmruby + build name (the wrapper names it <base>-mruby-lsp).
-      libmruby = Dir.glob(File.join(build_dir, "*-mruby-lsp", "lib", "libmruby.a")).first ||
-                 Dir.glob(File.join(build_dir, "*", "lib", "libmruby.a")).first
-      fail!("libmruby.a not found under #{build_dir}") unless libmruby
+      locate_libmruby = lambda do
+        lib = Dir.glob(File.join(build_dir, "*-mruby-lsp", "lib", "libmruby.a")).first ||
+              Dir.glob(File.join(build_dir, "*", "lib", "libmruby.a")).first
+        fail!("libmruby.a not found under #{build_dir}") unless lib
+        lib
+      end
+      libmruby = locate_libmruby.call
       mruby_build = File.dirname(File.dirname(libmruby))
+
+      # ── presym coherence guard ────────────────────────────────────────────────
+      # mruby's build regenerates include/mruby/presym/id.h (the compile-time
+      # symbol-ID table) whenever the gem set or their sources change symbols —
+      # but its mtime-driven object tracking does NOT rebuild every .o that baked
+      # the OLD IDs in (and the restored-mtimes reinstall path makes that more
+      # likely, not less). Mixed-generation objects then decode constants as the
+      # WRONG symbols at runtime — the "unexpected Platform::OS :is_a?" crash —
+      # because a symbol is just an index into a table that shifted underneath it.
+      # Guard: stamp the table's digest per cache; when a build ends with a
+      # different table than the cache was built against, the incremental result
+      # is untrustworthy — wipe and rebuild ONCE from clean (that rebuild bakes
+      # the new table into every object, and its digest becomes the new stamp).
+      # A fresh cache has no stamp and a presym-less build (MRB_NO_PRESYM) has no
+      # id.h; both skip the guard. Cost: a full rebuild exactly when the symbol
+      # table truly moved — which is when correctness requires one anyway.
+      require "digest"
+      presym_marker = File.join(cache, "presym.sha256")
+      read_presym = lambda do
+        p = File.join(mruby_build, "include", "mruby", "presym", "id.h")
+        Digest::SHA256.file(p).hexdigest if File.exist?(p)
+      end
+      presym_digest = read_presym.call
+      prior_presym = (File.read(presym_marker).strip if File.exist?(presym_marker))
+      if presym_digest && prior_presym && prior_presym != presym_digest
+        warn "mruby-lsp-setup: the build's symbol table (presym) changed since " \
+             "this cache was built — incremental objects may carry stale symbol " \
+             "IDs; forcing a clean rebuild"
+        FileUtils.rm_rf(build_dir)
+        FileUtils.rm_rf(File.join(cache, "mruby_reflect"))
+        step("rebuilding libmruby from clean (symbol table changed)") do
+          build_libmruby.call
+        end
+        libmruby = locate_libmruby.call
+        mruby_build = File.dirname(File.dirname(libmruby))
+        presym_digest = read_presym.call
+      end
 
       # ── 3. compile the reflect .so ────────────────────────────────────────────
 
       ext_dir = File.join(cache, "mruby_reflect")
-      step("compiling mruby_reflect.so") do
+      compile_reflect = lambda do
         FileUtils.mkdir_p(ext_dir)
         %w[mruby_tu.c bridge_tu.c bridge.h extconf.rb].each do |f|
           src = File.join(GEM_ROOT, "ext", "mruby_reflect", f)
@@ -327,9 +372,60 @@ module MrubyLsp
           fail!("reflect extension build failed") unless ok
         end
       end
+      step("compiling mruby_reflect.so") { compile_reflect.call }
 
       reflect_so = File.join(ext_dir, "mruby_reflect.so")
       fail!("mruby_reflect.so missing after build") unless File.exist?(reflect_so)
+
+      # ── VM sanity probe + self-heal ───────────────────────────────────────────
+      # The presym stamp above catches table drift going FORWARD, but a cache
+      # poisoned before the stamp existed has unknown provenance -- and stamps
+      # can't see every corruption. So prove the build by asking it: load the
+      # .so in a CHILD process (a corrupt VM may crash; the child dies, setup
+      # doesn't) and read the Platform pair the mruby-platform gem baked in.
+      # A coherent VM answers with a known OS symbol; stale objects decoding a
+      # shifted symbol table answer with garbage (the `Platform::OS :is_a?`
+      # field crash), and ABI skew raises or segfaults. Any of those -> the
+      # cache is incoherent: wipe it, rebuild from clean AUTOMATICALLY, and
+      # probe again. No user-facing reset step -- the update path heals itself.
+      require_relative "c_locator"
+      verify_vm = lambda do |so|
+        probe = <<~'RB'
+          os = nil
+          begin
+            require ARGV[0]
+            pf = Object.const_get(:MrubyReflect).new.platform
+            os = pf[0] if pf.is_a?(Array) && pf.size == 2 && pf[0].is_a?(Symbol)
+          rescue Exception
+            # any load/ABI failure is just "unhealthy"; the exit code says so.
+            # (exit lives OUTSIDE this begin -- rescue Exception would swallow
+            # SystemExit and turn a healthy probe into a failure.)
+          end
+          print os if os
+          exit(os ? 0 : 1)
+        RB
+        out = IO.popen([RbConfig.ruby, "-e", probe, so], err: File::NULL, &:read)
+        $?.success? && MrubyLsp::CLocator::KNOWN_OS.include?(out.to_s.strip.to_sym)
+      end
+
+      unless verify_vm.call(reflect_so)
+        warn "mruby-lsp-setup: the built VM failed the sanity probe (stale " \
+             "symbol IDs or ABI skew in the cached build) — rebuilding from clean"
+        FileUtils.rm_rf(build_dir)
+        FileUtils.rm_rf(ext_dir)
+        FileUtils.rm_f(presym_marker)
+        step("rebuilding libmruby from clean (VM sanity probe failed)") do
+          build_libmruby.call
+        end
+        libmruby = locate_libmruby.call
+        mruby_build = File.dirname(File.dirname(libmruby))
+        presym_digest = read_presym.call
+        step("recompiling mruby_reflect.so") { compile_reflect.call }
+        fail!("mruby_reflect.so missing after rebuild") unless File.exist?(reflect_so)
+        fail!("the VM still fails the sanity probe after a clean rebuild — " \
+              "this is a real build problem, not a stale cache; see the build " \
+              "output above") unless verify_vm.call(reflect_so)
+      end
 
       # Version by DIRECTORY (not filename): CRuby's require of a C extension calls
       # Init_<basename>, so the file must stay mruby_reflect.so — but require caches
@@ -377,6 +473,9 @@ module MrubyLsp
         # Written only here, after a successful build+compile, so a failed run never
         # leaves a stamp claiming the (broken/partial) cache is current.
         File.write(File.join(cache, "native.sha256"), native_digest)
+        # Same rule for the presym-table stamp (the coherence guard above): only a
+        # successful end-to-end run records what the cache is built against.
+        File.write(presym_marker, presym_digest) if presym_digest
       end
 
       # Record build-completion state in the user's OWN state store (~/.local/share,

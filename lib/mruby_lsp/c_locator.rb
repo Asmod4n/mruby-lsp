@@ -18,6 +18,12 @@ module MrubyLsp
   # build_config enables via conf.enable_debug. Without it, addr2line yields "??"
   # and we degrade to nil (no crash).
   class CLocator
+    # Every OS symbol mruby-platform's C side can emit. The backend dispatch
+    # below covers exactly these; setup's VM sanity probe validates a built
+    # VM's Platform::OS against the same list -- anything else means the build
+    # is incoherent (e.g. stale objects decoding a shifted symbol table).
+    KNOWN_OS = %i[linux freebsd netbsd openbsd dragonfly macos windows unknown].freeze
+
     def self.open(so_path = ENV["MRUBY_REFLECT_SO"], platform:)
       return nil unless so_path && File.exist?(so_path)
 

@@ -1015,3 +1015,44 @@ genuinely fresh workspace (no build dir) skips the wipe because there is
 nothing to wipe. Corollary for the editor: the "Rebuild Now" command must run
 the clean rebuild (`mruby-lsp-update rebuild`), NOT another incremental setup —
 an incremental setup is exactly the path the laundered cache no-ops.
+
+## A presym-table shift poisons incrementally rebuilt caches (symbols decode WRONG)
+
+The native fingerprint above guards OUR C sources — it says nothing about the
+project's mruby world. mruby's build regenerates `include/mruby/presym/id.h`
+(the compile-time symbol-ID table) whenever the gem set or their symbols
+change: an updated mruby head (e.g. the July 2026 switch to the Prism-based
+compiler, which removed whole gems), a re-fetched gem at a newer revision, a
+gem added or dropped from the config. But mruby's mtime-driven build does NOT
+recompile every already-built object that baked the OLD IDs in — and the
+restored-mtimes reinstall path makes surviving stale objects MORE likely. A
+symbol is just an index into that table, so mixed-generation objects decode
+constants as the wrong symbols entirely. Field symptom: server crash at
+startup with `unexpected Platform::OS :is_a?` — `Platform::OS` was written as
+old-table `:linux`, read through the new table. It recurred on EVERY gem
+update, because each post-update setup re-runs rake and refreshes the table
+without refreshing every object.
+
+Fix shape, two layers (setup.rb):
+1. **Presym coherence guard** — stamp `cache/presym.sha256` with the digest of
+   the generated id.h on every successful setup; when a build ends with a
+   DIFFERENT table than the cache was stamped with, the incremental result is
+   untrustworthy — wipe build + reflect_so and rebuild ONCE from clean. Same
+   fail-closed discipline as native.sha256: the stamp is written only after a
+   fully successful run. A presym-less build (MRB_NO_PRESYM) has no id.h and
+   skips the guard.
+2. **VM sanity probe + self-heal** — stamps only see drift going forward; a
+   cache poisoned BEFORE the stamp existed has unknown provenance. So setup
+   also proves the build by asking it: load the .so in a CHILD process (a
+   corrupt VM may crash — the child dies, setup doesn't) and read the
+   Platform pair; anything but a known OS symbol (CLocator::KNOWN_OS) means
+   the cache is incoherent -> wipe, rebuild from clean AUTOMATICALLY, probe
+   again, and only then fail loudly. No user-facing reset step.
+
+Probe trap: the child's `exit 0` must live OUTSIDE its `rescue Exception` —
+SystemExit IS an Exception, so an inside-the-begin exit gets swallowed and a
+healthy probe reads as failure (which then loops every setup through a
+pointless full rebuild).
+
+Neither layer touches the fast path: a routine gem update leaves the table
+identical and the probe passes — setup stays the incremental no-op.

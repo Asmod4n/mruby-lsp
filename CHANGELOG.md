@@ -138,6 +138,21 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- **Presym coherence guard**: a shift in mruby's compile-time symbol table
+  (`include/mruby/presym/id.h` — an updated mruby head such as the Prism-based
+  compiler switch, a re-fetched gem at a newer revision, a changed gem set)
+  used to poison the incrementally rebuilt workspace cache: mtime-satisfied
+  objects kept OLD symbol IDs baked in and decoded constants as the wrong
+  symbols at runtime (server crash at startup: `unexpected Platform::OS
+  :is_a?`), recurring on every gem update. Setup now stamps the table's digest
+  per cache (`presym.sha256`) and, when a build ends with a different table
+  than the cache was built against, wipes and rebuilds once from clean.
+- **VM sanity probe (self-healing setup)**: after compiling the reflect `.so`,
+  setup loads the built VM in a child process and reads its `Platform` pair;
+  a garbage symbol, raise, or crash marks the cache incoherent and triggers
+  the clean rebuild automatically — a workspace poisoned before these guards
+  existed heals itself on the next update, no manual reset required. Healthy
+  caches pay only the probe; the incremental fast path is unchanged.
 - The per-workspace clean-rebuild gate **fails closed on a missing fingerprint
   marker**: an existing cached build with no recorded `native.sha256` (a
   workspace set up before the gate existed) is now wiped and rebuilt instead of
