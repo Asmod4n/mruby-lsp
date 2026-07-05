@@ -157,6 +157,15 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- The extension's post-install workspace refresh is gated on **content, not
+  version**: the bundle manifest's `native` fingerprint is compared per
+  consented workspace against the cache's recorded `native.sha256`, and setup
+  runs only where they differ. The old gate (`globalState.lastVersion`) never
+  fired on a same-version dev `rake vscode:install` — VS Code keeps
+  globalState across uninstall/reinstall — so changed native code silently
+  kept running against stale workspace builds. No version bump is needed to
+  iterate: identical content is a no-op, changed content rebuilds exactly the
+  stale workspaces.
 - **Presym coherence guard**: a shift in mruby's compile-time symbol table
   (`include/mruby/presym/id.h` — an updated mruby head such as the Prism-based
   compiler switch, a re-fetched gem at a newer revision, a changed gem set)

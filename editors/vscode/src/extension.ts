@@ -563,31 +563,50 @@ function consentedWorkspaces(): { root: string }[] {
   return out;
 }
 
-// After an extension update OR a fresh extension instance that finds an existing
-// build (the dev `rake vscode:install` reinstall, whose globalState is wiped),
-// run setup ONCE in every consented workspace. Setup is idempotent and cheap
-// when nothing changed (it restores mtimes and the in-setup native fingerprint
-// no-ops the compile), and it actually REBUILDS only when the native code differs
-// from what that workspace was last built against. So this is "setup everywhere
-// once per version change; rebuild where native changed." The new version is
-// recorded before sweeping, so it runs at most once per (re)install.
+// The native fingerprint a workspace's cache was last built against — written
+// by setup only at the end of a fully successful run (cache/native.sha256).
+// undefined = no build or unknown provenance; both mean "treat as stale".
+function workspaceNative(root: string): string | undefined {
+  try {
+    const s = fs.readFileSync(path.join(cacheDir(root), "native.sha256"), "utf8").trim();
+    return s.length > 0 ? s : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Refresh workspaces whose build no longer matches the native code this
+// extension ships. Gated on CONTENT, not on version or install state: the
+// bundle manifest's `native` digest (packaged with the same helper setup uses)
+// is compared per consented workspace against the cache's recorded
+// native.sha256 — equal digests skip everything, a mismatch (or a missing
+// stamp: unknown provenance) runs headless setup there, whose own fingerprint
+// gate then does the clean rebuild. This intentionally does NOT key off
+// `globalState.lastVersion`: VS Code keeps globalState across
+// uninstall/reinstall, so a same-version dev `rake vscode:install` looked
+// "already handled" and workspaces silently kept running an old reflect .so.
+// No bump needed to iterate — same content is a no-op, changed content
+// rebuilds exactly the stale workspaces. The version gate survives only as a
+// fallback for a bundle-less dev checkout (no manifest to compare).
 async function maybeRebuildAfterUpdate(context: vscode.ExtensionContext): Promise<void> {
-  const current = context.extension.packageJSON.version as string;
-  const last = context.globalState.get<string>("lastVersion");
-  if (last === current) return;             // same version already handled — nothing to do
-  await context.globalState.update("lastVersion", current);
+  const all = consentedWorkspaces().map((w) => w.root);
+  if (all.length === 0) return;
 
-  // No early-out on `last === undefined`. A wiped globalState (a genuine first
-  // install OR the dev `rake vscode:install`, which uninstalls first) looks the
-  // same — but if a consented workspace already has a build, that build may
-  // predate this extension instance and must be re-validated. The ABSENCE of
-  // state is itself the marker to re-run setup. consentedWorkspaces() is the
-  // real gate: empty on a true first install (no build), non-empty when a build
-  // survived in XDG (which uninstall never touches).
-  const roots = consentedWorkspaces().map((w) => w.root);
-  if (roots.length === 0) return;
-
-  const reason = last === undefined ? `fresh instance on v${current}` : `update ${last} -> ${current}`;
+  const shipped = bundleManifest(context.extensionPath)?.["native"];
+  let roots: string[];
+  let reason: string;
+  if (typeof shipped === "string" && shipped.length > 0) {
+    roots = all.filter((r) => workspaceNative(r) !== shipped);
+    if (roots.length === 0) return;
+    reason = `native code differs from installed builds (${shipped.slice(0, 12)}…)`;
+  } else {
+    const current = context.extension.packageJSON.version as string;
+    const last = context.globalState.get<string>("lastVersion");
+    if (last === current) return;
+    await context.globalState.update("lastVersion", current);
+    roots = all;
+    reason = last === undefined ? `fresh instance on v${current}` : `update ${last} -> ${current}`;
+  }
   output.appendLine(`${reason}: running setup in ${roots.length} workspace(s)`);
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: "mruby-lsp: refreshing builds after update…" },
