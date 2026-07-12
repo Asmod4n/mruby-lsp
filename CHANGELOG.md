@@ -171,6 +171,16 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- **The refactor code actions actually apply now.** The server advertised
+  `resolveProvider: true` and offered *Extract Variable*, *Extract Method*,
+  and *Toggle block style*, but had no `codeAction/resolve` handler — invoking
+  any of them died with `-32601` and did nothing. `codeAction/resolve` is
+  implemented as a faithful port of ruby-lsp 0.26.9's resolver (buffer-only,
+  Prism), the offer side now matches ruby-lsp's rules (toggle at a cursor
+  inside a block or on any selection; extract pair on a selection), and the
+  **Create Attribute Reader/Writer/Accessor** family is offered on instance
+  variables. Byte-verified against all 27 vendored ruby-lsp vectors
+  (code_action_resolve 22/22, code_actions 5/5) plus prism-only unit coverage.
 - **Bare `module_function` follows mruby HEAD** (≥ 2026-07, now CRuby-like):
   defs after a bare `module_function` in a module body get a public singleton
   copy and a **private** instance method, until a bare visibility verb resets
