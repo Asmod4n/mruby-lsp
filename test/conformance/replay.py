@@ -23,7 +23,13 @@ def req(p,m,par,mid):
     while True:
         r=read(p)
         if r is None: return None
-        if "method" in r and "id" not in r: continue
+        if "method" in r and "id" in r:
+            # server->client request (e.g. the unsandboxed-consent dialog):
+            # answer it -- ids are server-numbered and may collide with ours.
+            acts=(r.get("params") or {}).get("actions") or []
+            res=acts[0] if r["method"]=="window/showMessageRequest" and acts else None
+            send(p,{"jsonrpc":"2.0","id":r["id"],"result":res}); continue
+        if "method" in r: continue
         if r.get("id")==mid: return r.get("result")
 def build_params(uri, exp_params, shape):
     pos=None
@@ -38,7 +44,7 @@ def build_params(uri, exp_params, shape):
     base["position"]=pos; return base
 env=dict(os.environ,RUBYLIB="/tmp/prism-src/lib:/tmp/mruby-lsp-new/lib")
 p=lsp(env)
-req(p,"initialize",{"processId":None,"rootUri":"file:///tmp/parity/ws","capabilities":{"general":{"positionEncodings":["utf-8"]}}},1)
+req(p,"initialize",{"processId":None,"rootUri":"file:///tmp/parity/ws","capabilities":{"window":{"showMessage":{},"showMessageRequest":{"messageActionItem":{}}},"general":{"positionEncodings":["utf-8"]}}},1)
 send(p,{"jsonrpc":"2.0","method":"initialized","params":{}}); time.sleep(1.5)
 passed=fail=skip=0; fails=[]
 for exp in sorted(glob.glob(f"{RLSRC}/test/expectations/{FEATURE}/*.exp.json")):
@@ -63,3 +69,6 @@ for (name,exp,got) in fails[:int(sys.argv[4]) if len(sys.argv)>4 else 2]:
     print(f"    exp: {json.dumps(exp)[:150]}")
     print(f"    got: {json.dumps(got)[:150]}")
 p.terminate()
+# A real exit code, not a printed summary a caller has to scrape: any FAIL, or
+# a suspiciously empty run (wrong RLSRC / no fixtures matched), is red.
+sys.exit(0 if fail==0 and passed>0 else 1)

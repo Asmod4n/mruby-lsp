@@ -61,9 +61,14 @@ SCRIPT = <<~'MRB'
   module MF; def helper; "h"; end; module_function :helper; end
   line("module_function_singleton", (begin; MF.helper; "yes"; rescue; "no"; end))
   line("module_function_instance_stays_public", MF.instance_methods.include?(:helper) ? "yes" : "no")
-  # bare module_function is inert (does not affect subsequent defs)
-  module MF2; module_function; def a; end; end
-  line("module_function_bare_inert", (begin; MF2.a; "no"; rescue NoMethodError; "yes"; end))
+  # bare module_function applies to subsequent defs: public singleton copy,
+  # instance goes PRIVATE (mruby HEAD matches CRuby here since 2026-07; the
+  # bare form was inert in mruby before). A bare visibility verb ends the mode.
+  module MF2; module_function; def a; end; public; def b; end; end
+  line("module_function_bare_singleton", (begin; MF2.a; "yes"; rescue NoMethodError; "no"; end))
+  line("module_function_bare_instance_private", MF2.private_instance_methods.include?(:a) ? "yes" : "no")
+  line("module_function_bare_ends_at_public", (begin; MF2.b; "no"; rescue NoMethodError; "yes"; end))
+  line("module_function_bare_public_def_public", MF2.public_instance_methods.include?(:b) ? "yes" : "no")
   # module_function undef'd on Class
   line("module_function_undef_on_class", (begin; Class.new.send(:module_function, :x); "no"; rescue NoMethodError; "yes"; end))
 
@@ -82,7 +87,10 @@ EXPECT = {
   "define_method_public_despite_private" => "yes",
   "module_function_singleton" => "yes",
   "module_function_instance_stays_public" => "yes",
-  "module_function_bare_inert" => "yes",
+  "module_function_bare_singleton" => "yes",
+  "module_function_bare_instance_private" => "yes",
+  "module_function_bare_ends_at_public" => "yes",
+  "module_function_bare_public_def_public" => "yes",
   "module_function_undef_on_class" => "yes",
   "private_constant_absent" => "yes",
 }.freeze

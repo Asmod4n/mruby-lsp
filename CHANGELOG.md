@@ -103,6 +103,20 @@ what mruby "usually" has.
 - ruby-lsp parity verified live (char-by-char) and against ruby-lsp 0.26.9's own
   vendored expectation vectors; structural features (documentSymbol, foldingRange,
   selectionRange, documentHighlight) byte-equal.
+- **CI (GitHub Actions):** every pull request and every push to `main` runs
+  the WHOLE suite against the real server — mruby HEAD + the reflection VM are
+  built via `mruby-lsp-setup`, then all of `test/overlay` (incl. the live-VM
+  semantics pin), the conformance replays over real LSP stdio, the
+  `test/consistency` suite under a real LSP client (headless Neovim), and both
+  extension suites.
+- The extension tests run in a **real VS Code extension host** (official
+  `@vscode/test-cli` runner, fixture workspaces, nothing mocked); the
+  hand-mocked `vscode` harness had drifted from the product and is gone.
+- The conformance replay clients answer the server's unsandboxed-consent
+  dialog over `window/showMessageRequest` — the documented client-side consent
+  path, now exercised on every replay run — and each replay script now exits
+  non-zero on any FAIL (previously always exit 0, requiring a caller to scrape
+  the printed summary line).
 
 ### Security
 - Reflection only — never executes buffer code (no `eval`/`mrb_load_string`).
@@ -157,6 +171,14 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- **Bare `module_function` follows mruby HEAD** (≥ 2026-07, now CRuby-like):
+  defs after a bare `module_function` in a module body get a public singleton
+  copy and a **private** instance method, until a bare visibility verb resets
+  the scope. The overlay previously modeled the bare form as inert — which
+  mruby itself changed. The explicit-arg form is unchanged (public singleton
+  copy, instance stays public — still an mruby divergence from CRuby). Caught
+  by the live-VM pin `test/overlay/mruby_semantics_test.rb`, now re-pinned to
+  the new behavior.
 - The workspace-refresh gate **logs its verdict** per workspace on every
   activation (`refresh gate: <root> native=… shipped=… -> current|STALE`),
   and the server **warns once** when a workspace's reflect `.so` predates a

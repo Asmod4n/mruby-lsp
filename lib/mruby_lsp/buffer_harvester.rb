@@ -18,8 +18,12 @@ module MrubyLsp
   #   attr_reader/writer/accessor/attr -> generated accessors (r / w= / a + a=)
   #   alias / alias_method    -> new name, snapshot of target's current signature
   #   define_method(:literal) -> add, PUBLIC regardless of scope (mruby quirk)
-  #   module_function :name   -> add a public singleton copy (mruby: explicit
-  #                              args only; bare form is inert; instance stays public)
+  #   module_function :name   -> add a public singleton copy (instance stays
+  #                              public — mruby divergence from CRuby)
+  #   module_function (bare)  -> mode: later defs in the module get a public
+  #                              singleton copy + PRIVATE instance method, until
+  #                              a bare visibility verb resets the scope
+  #                              (mruby HEAD ≥ 2026-07, matches CRuby)
   #   undef / undef_method    -> tombstone (blocks inherited) -> Entry kind :undef
   #   remove_method           -> drop own copy only             -> Entry kind :remove
   #   include / prepend       -> carried on the class Entry's mixins (ancestry)
@@ -79,8 +83,12 @@ module MrubyLsp
     # visibility for the enclosing class/module body. sclass: true means we're
     # inside a `class << self` (or `class << Const`) body, so every emitted
     # method-table op targets the SINGLETON side.
-    def process(stmts, nesting, uri, comments, out, sclass: false, tdoc: nil, idx: nil)
-      vis = { v: :public } # mutable cell so dispatch helpers can change it
+    def process(stmts, nesting, uri, comments, out, sclass: false, module_body: false, tdoc: nil, idx: nil)
+      # Mutable cell so dispatch helpers can change it. :mf is the bare
+      # `module_function` mode (module bodies only): subsequent defs get a
+      # public singleton copy and a PRIVATE instance method, until a bare
+      # visibility verb resets the scope. Pinned in mruby_semantics_test.rb.
+      vis = { v: :public, mf: false }
       # native_ext_type declarations in THIS body, so attr_* accessors generated
       # below inherit the declared ivar type (attr_reader :x over
       # `native_ext_type :@x, T` -> reader returns T). Single concrete only;
@@ -104,9 +112,17 @@ module MrubyLsp
             end
           process(statements_of(stmt), target, uri, comments, out, sclass: true, tdoc: tdoc, idx: idx) if target
         when Prism::DefNode
-          emit_def(stmt, nesting, uri, comments, out, vis[:v], sclass: sclass, tdoc: tdoc, idx: idx)
+          if vis[:mf] && !sclass && stmt.receiver.nil?
+            # In bare-module_function mode a def lands twice: a PRIVATE
+            # instance method plus a public singleton copy (mruby HEAD matches
+            # CRuby here since 2026-07; VM-pinned in mruby_semantics_test.rb).
+            emit_def(stmt, nesting, uri, comments, out, :private, sclass: sclass, tdoc: tdoc, idx: idx)
+            emit_synth(owner_of(nesting), stmt.name.to_s, render_params(stmt), uri, stmt.location, out, :public, singleton: true)
+          else
+            emit_def(stmt, nesting, uri, comments, out, vis[:v], sclass: sclass, tdoc: tdoc, idx: idx)
+          end
         when Prism::CallNode
-          dispatch_call(stmt, nesting, uri, comments, out, vis, sclass: sclass, ivar_types: ivar_types, tdoc: tdoc, idx: idx)
+          dispatch_call(stmt, nesting, uri, comments, out, vis, sclass: sclass, module_body: module_body, ivar_types: ivar_types, tdoc: tdoc, idx: idx)
         when Prism::AliasMethodNode
           emit_alias(stmt, nesting, uri, out, vis[:v], sclass: sclass)
         when Prism::UndefNode
@@ -132,7 +148,7 @@ module MrubyLsp
         range: full_range(node), name_range: loc_range(node.constant_path.location),
         superclass: sup, mixins: class_mixins(node),
       )
-      process(statements_of(node), nesting + [name], uri, comments, out, tdoc: tdoc, idx: idx)
+      process(statements_of(node), nesting + [name], uri, comments, out, module_body: node.is_a?(Prism::ModuleNode), tdoc: tdoc, idx: idx)
     end
 
     def emit_def(node, nesting, uri, comments, out, visibility, forced_visibility: nil, sclass: false, tdoc: nil, idx: nil)
@@ -154,7 +170,7 @@ module MrubyLsp
       node.compact_child_nodes.each { |c| descend(c, nesting, uri, comments, out, tdoc: tdoc, idx: idx) }
     end
 
-    def dispatch_call(call, nesting, uri, comments, out, vis, sclass: false, ivar_types: {}, tdoc: nil, idx: nil)
+    def dispatch_call(call, nesting, uri, comments, out, vis, sclass: false, module_body: false, ivar_types: {}, tdoc: nil, idx: nil)
       return descend(call, nesting, uri, comments, out, tdoc: tdoc, idx: idx) unless call.receiver.nil?
       sym = call.name
       args = call_args(call)
@@ -174,10 +190,17 @@ module MrubyLsp
         # mruby: define_method'd methods are PUBLIC regardless of surrounding scope.
         emit_synth(owner_of(nesting), nm, params_from_block(call), uri, call.location, out, :public, singleton: sclass) if nm
       elsif sym == :module_function
-        # mruby: explicit-arg form adds a public singleton copy; bare form is inert.
-        args.each do |a|
-          nm = literal_name(a)
-          emit_synth(owner_of(nesting), nm, signature_for(owner_of(nesting), nm, out), uri, call.location, out, :public, singleton: true) if nm
+        # mruby: explicit-arg form adds a public singleton copy (the instance
+        # method STAYS public — mruby divergence from CRuby, VM-pinned). The
+        # bare form switches the body into module_function mode (modules only;
+        # on a Class mruby raises NoMethodError).
+        if args.empty?
+          vis[:mf] = true if module_body
+        else
+          args.each do |a|
+            nm = literal_name(a)
+            emit_synth(owner_of(nesting), nm, signature_for(owner_of(nesting), nm, out), uri, call.location, out, :public, singleton: true) if nm
+          end
         end
       else
         descend(call, nesting, uri, comments, out, tdoc: tdoc, idx: idx)
@@ -190,6 +213,7 @@ module MrubyLsp
     def apply_visibility(verb, _call, args, nesting, uri, comments, out, vis, sclass: false)
       if args.empty?
         vis[:v] = verb
+        vis[:mf] = false # a bare visibility verb ends module_function mode (VM-pinned)
         return
       end
       owner = owner_of(nesting)

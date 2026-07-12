@@ -95,5 +95,33 @@ harvest(idx, "file:///str.rb", "class String\n  undef_method :upcase\nend\n", 0)
 check.("buffer undef removes a compiled method", names(idx.visible_methods("String")).include?("upcase"), false)
 check.("  sibling compiled method stays", names(idx.visible_methods("String")).include?("downcase"), true)
 
+# ===== 7. bare module_function: singleton copy + private instance, until a
+# bare visibility verb resets the scope (mruby HEAD matches CRuby here since
+# 2026-07 — VM-pinned in mruby_semantics_test.rb). Class bodies unaffected
+# (mruby raises NoMethodError there).
+idx = MrubyLsp::Index.new
+idx.set_ancestors("Object", %w[Object Kernel BasicObject])
+src7 = <<~RB
+  module MF
+    def before; end
+    module_function
+    def helper; end
+    public
+    def after; end
+  end
+  class NotAModule
+    module_function
+    def plain; end
+  end
+RB
+harvest(idx, "file:///mf.rb", src7, 0)
+sing = idx.singleton_methods_of("MF").map { |e| e.name.split(/[#.]/).last }.sort.uniq
+check.("bare module_function adds singleton copy", sing.include?("helper"), true)
+check.("  defs before/after the mode add no singleton", sing & %w[before after], [])
+check.("  instance copy went private", names(idx.methods_of("MF")), %w[after before])
+check.("  private table carries the copy", names(idx.private_methods_of("MF")).include?("helper"), true)
+check.("  class body: bare module_function inert", names(idx.methods_of("NotAModule")), %w[plain])
+check.("  class body: no singleton synthesized", idx.singleton_methods_of("NotAModule").map { |e| e.name.split(/[#.]/).last }, [])
+
 puts "\n#{fails.zero? ? 'ALL PASS' : "#{fails} FAILED"}"
 exit(fails.zero? ? 0 : 1)

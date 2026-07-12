@@ -1,0 +1,115 @@
+# The whole test suite, against the REAL server, on every PR and every push
+# to main (plus manual dispatch). No fast/reduced variant: each run installs
+# the gems from the checkout, builds mruby HEAD plus the reflection VM via
+# mruby-lsp-setup, and drives the real LSP —
+#   - test/overlay, ALL of it, including the live-VM semantics pin
+#   - the conformance replays over real LSP stdio, byte-equal against the
+#     vendored ruby-lsp vectors (test/conformance/README.md): one runner per
+#     feature under test/conformance/replays/, each exiting non-zero on any
+#     FAIL. Adding a feature means dropping a script in that directory — this
+#     workflow never needs editing for it.
+#   - test/consistency, driven by a real LSP client (headless Neovim + clangd)
+#   - the extension suites in a real VS Code extension host (xvfb) + the
+#     debug-adapter protocol tests
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: server suite (real reflection VM + real LSP clients)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+
+      - name: install the gems from this checkout
+        run: |
+          gem install --no-document rake
+          rake install
+          # rake install uses `gem install --user-install`, so the binstubs land
+          # in Gem.user_dir/bin (Gem.bindir on setups where user == system).
+          # Put both on PATH.
+          ruby -e 'puts File.join(Gem.user_dir, "bin"); puts Gem.bindir' >> "$GITHUB_PATH"
+
+      - name: build mruby HEAD + the reflection VM
+        run: |
+          mkdir -p /tmp/parity/ws
+          printf 'MRuby::Build.new do |conf|\n  conf.toolchain :gcc\n  conf.gembox "default"\nend\n' > /tmp/parity/ws/build_config.rb
+          git clone --depth 1 https://github.com/mruby/mruby /tmp/parity/ws/mruby
+          cd /tmp/parity/ws/mruby
+          MRUBY_CONFIG=/tmp/parity/ws/build_config.rb rake
+          mruby-lsp-setup /tmp/parity/ws
+
+      - name: test/overlay — the whole suite, semantics pinned in the live VM
+        working-directory: test/overlay
+        run: |
+          fail=0
+          for t in *_test.rb; do
+            echo "== $t"
+            MRUBY=/tmp/parity/ws/mruby/build/host/bin/mruby ruby "$t" || fail=1
+          done
+          exit "$fail"
+
+      # The layout the replay clients expect (test/parity/README.md): the
+      # launcher + workspace under /tmp/parity, the checkout's lib at
+      # /tmp/mruby-lsp-new, the built reflect .so at /tmp/exttest. prism and
+      # value_bridge resolve from the installed gems (/tmp/prism-src stays
+      # absent on purpose — the $LOAD_PATH entry is a no-op then).
+      - name: assemble the parity layout
+        run: |
+          cp test/parity/ours_launch.rb /tmp/parity/
+          ln -sfn "$GITHUB_WORKSPACE" /tmp/mruby-lsp-new
+          mkdir -p /tmp/exttest
+          cp "$HOME"/.cache/mruby-lsp/*/mruby_reflect/v-*/mruby_reflect.so /tmp/exttest/
+
+      - name: conformance replay over real LSP stdio
+        working-directory: test/conformance
+        run: |
+          fail=0
+          for f in replays/*.sh; do
+            echo "== $f"
+            "$f" || fail=1
+          done
+          exit "$fail"
+
+      - name: test/consistency — real LSP client (headless Neovim) against the real server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y neovim clangd
+          export MRUBY_REFLECT_SO="$(ruby -e 'puts File.readlines(Dir[File.join(Dir.home, ".cache/mruby-lsp/*/paths.env")].first).find { |l| l.start_with?("reflect_so=") }.split("=", 2).last.strip')"
+          export MRUBY_LSP_WS=/tmp/parity/ws
+          export MRUBY_LSP_REPO="$GITHUB_WORKSPACE"
+          nvim --headless -l test/consistency/feature_consistency.lua
+          nvim --headless -l test/consistency/occurrence_consistency.lua
+
+  editor:
+    name: extension (real VS Code host) + debug adapter
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: npm ci
+        working-directory: editors/vscode
+        run: npm ci
+      - name: extension tests (real VS Code host)
+        working-directory: editors/vscode
+        run: xvfb-run -a npm test
+      - name: debug adapter protocol tests
+        working-directory: editors/vscode
+        run: npm run test:debug-adapter

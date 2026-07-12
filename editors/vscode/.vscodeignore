@@ -5,7 +5,8 @@ src/**
 tsconfig.json
 .gitignore
 .vscodeignore
-.mocharc.json
+.vscode-test.mjs
+test/**
 **/*.test.js
 node_modules/**
 **/.vscode-test/**
