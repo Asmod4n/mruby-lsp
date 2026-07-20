@@ -15,6 +15,15 @@ without a network clone. Pinned: ruby-lsp **0.26.9**, commit
 The three replay scripts default `RLSRC` to that vendored dir; set the `RLSRC`
 env var to point at a different checkout if refreshing/comparing.
 
+The replay clients advertise `window.showMessage` and answer server→client
+REQUESTS (a frame carrying both `method` and `id` — server ids can collide with
+ours, so requests are matched before responses). This matters because
+`ours_launch.rb` runs the server without the launcher: on Linux that is always
+unconfined, so after `initialized` the server asks for unsandboxed-consent via
+`window/showMessageRequest` and the harness answers "Continue without sandbox"
+(the documented client-side consent path). Harness mechanics only — the
+vendored expected results are untouched.
+
 - `replay_positional.py <feature> <lspMethod>` — features whose params include a
   cursor position (document_highlight, etc.).
 - `replay_document.py <feature> <lspMethod>` — whole-document features

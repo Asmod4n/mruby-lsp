@@ -182,7 +182,7 @@
     "watch": "tsc -watch -p ./",
     "bundle": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
     "vscode:prepublish": "npm run bundle",
-    "test": "mocha",
+    "test": "vscode-test",
     "test:debug-adapter": "node debug/mrdbDebugSession.test.js",
     "pretest": "npm run compile"
   },
@@ -191,13 +191,13 @@
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
-    "@types/mocha": "^10.0.10",
     "@types/node": "^18.0.0",
     "@types/vscode": "^1.75.0",
     "@vscode/debugprotocol": "^1.68.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.28.0",
-    "mocha": "^11.7.6",
     "typescript": "^5.0.0"
   }
 }

@@ -77,7 +77,9 @@ Install them the same way a user would, and put the gem bindir on `PATH`:
 
 ```bash
 rake install                                   # builds + installs the gems (fetches deps)
-export PATH="$(ruby -e 'print Gem.bindir'):$PATH"
+# rake install is a --user-install: binstubs land in Gem.user_dir/bin
+# (Gem.bindir on setups where user and system dirs coincide) — put both on PATH:
+export PATH="$(ruby -e 'print File.join(Gem.user_dir, "bin")'):$(ruby -e 'print Gem.bindir'):$PATH"
 ```
 
 `test/overlay/mruby_semantics_test.rb` additionally needs **mruby head** built
@@ -87,12 +89,39 @@ point the test at the binary with `MRUBY=/path/to/mruby/build/host/bin/mruby`
 
 ```bash
 cd test/overlay && for t in *_test.rb; do ruby "$t"; done   # unit (prism-only)
-cd editors/vscode && npm test                               # extension + debug adapter
+cd editors/vscode && npm test                    # extension, in a real VS Code host
+cd editors/vscode && npm run test:debug-adapter  # DAP session logic (plain node)
 ```
+
+`npm test` uses VS Code's official extension-test runner (`@vscode/test-cli`,
+config in `.vscode-test.mjs`): it downloads a VS Code build into `.vscode-test/`
+on first run and drives the compiled extension in a live extension host against
+the fixture workspaces under `test/fixtures/` — nothing about the `vscode` API
+is mocked. On a machine without a display, run it under xvfb:
+`xvfb-run -a npm test`.
 
 The conformance + parity suites (`test/conformance/README.md`,
 `test/parity/README.md`) need a built reflection VM and, for parity, ruby-lsp
 built from source; both READMEs document the procedure.
+
+## CI
+
+One workflow (`.github/workflows/ci.yml`), and it runs the WHOLE suite against
+the real server on every pull request and every push to `main` (plus manual
+dispatch) — there is no reduced/fast variant:
+
+- **server job:** installs the gems from the checkout (`rake install`), builds
+  mruby HEAD plus the reflection VM via `mruby-lsp-setup`, then runs all of
+  `test/overlay` (including the live-VM pin `mruby_semantics_test.rb`), the
+  conformance replays over real LSP stdio (each script exits non-zero on any
+  FAIL — see the scorecard in `test/conformance/README.md`), and the
+  `test/consistency` suite driven by a real LSP client (headless Neovim +
+  clangd).
+- **editor job:** the extension suite in a real VS Code extension host
+  (`xvfb-run -a npm test`) and the debug-adapter protocol tests.
+
+An upstream mruby behavior change, a conformance regression, or an
+endpoint-consistency drift turns the run red.
 
 `test/consistency/` asserts that the SAME question answered through different
 endpoints (completion / hover / signatureHelp / definition / references /
