@@ -18,8 +18,9 @@ module MrubyLsp
   #   attr_reader/writer/accessor/attr -> generated accessors (r / w= / a + a=)
   #   alias / alias_method    -> new name, snapshot of target's current signature
   #   define_method(:literal) -> add, PUBLIC regardless of scope (mruby quirk)
-  #   module_function :name   -> add a public singleton copy (instance stays
-  #                              public — mruby divergence from CRuby)
+  #   module_function :name   -> add a public singleton copy + instance method
+  #                              becomes PRIVATE (mruby HEAD matches CRuby
+  #                              here since 2026-07)
   #   module_function (bare)  -> mode: later defs in the module get a public
   #                              singleton copy + PRIVATE instance method, until
   #                              a bare visibility verb resets the scope
@@ -190,16 +191,20 @@ module MrubyLsp
         # mruby: define_method'd methods are PUBLIC regardless of surrounding scope.
         emit_synth(owner_of(nesting), nm, params_from_block(call), uri, call.location, out, :public, singleton: sclass) if nm
       elsif sym == :module_function
-        # mruby: explicit-arg form adds a public singleton copy (the instance
-        # method STAYS public — mruby divergence from CRuby, VM-pinned). The
-        # bare form switches the body into module_function mode (modules only;
-        # on a Class mruby raises NoMethodError).
+        # mruby: explicit-arg form adds a public singleton copy AND makes the
+        # instance method PRIVATE (mruby HEAD matches CRuby here since
+        # 2026-07; VM-pinned in mruby_semantics_test.rb). The bare form
+        # switches the body into module_function mode (modules only; on a
+        # Class mruby raises NoMethodError).
         if args.empty?
           vis[:mf] = true if module_body
         else
+          owner = owner_of(nesting)
           args.each do |a|
             nm = literal_name(a)
-            emit_synth(owner_of(nesting), nm, signature_for(owner_of(nesting), nm, out), uri, call.location, out, :public, singleton: true) if nm
+            next unless nm
+            emit_synth(owner, nm, signature_for(owner, nm, out), uri, call.location, out, :public, singleton: true)
+            retro_visibility(out, owner, nm, :private, sclass: sclass)
           end
         end
       else
