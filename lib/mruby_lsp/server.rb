@@ -434,6 +434,15 @@ module MrubyLsp
       CodeAction.response(doc, range, context, uri)
     end
 
+    # codeAction/resolve — params ARE the offered action; the document comes
+    # from its data.uri. Unresolvable input returns the action unchanged (an
+    # edit-less action is a client no-op).
+    def code_action_resolve(msg)
+      action = msg[:params]
+      doc = @mutex.synchronize { @store.get(action.dig(:data, :uri)) }
+      CodeActionResolve.response(doc, action)
+    end
+
     def text_document_inlay_hint(msg)
       uri = msg[:params][:textDocument][:uri]
       range = msg[:params][:range]

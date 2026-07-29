@@ -29,6 +29,11 @@ vendored expected results are untouched.
 - `replay_document.py <feature> <lspMethod>` — whole-document features
   (documentSymbol, foldingRange, semanticTokens/full).
 - `replay.py <feature> <lspMethod> <shape>` — shape is position|positions|document.
+- `replay_actions.py <feature>` — code_actions (the textDocument/codeAction
+  offers) and code_action_resolve (codeAction/resolve). Both vector families
+  carry their request params verbatim (uri `file:///fake`, offer contexts with
+  embedded quickfix diagnostics), so the fixture is didOpened at that uri and
+  the recorded params are sent unchanged.
 
 ## How we compare — SEMANTIC, not byte-equal everywhere
 Our output legitimately differs from ruby-lsp's on two axes, BY DESIGN:
@@ -50,12 +55,14 @@ The C bridge is not involved: it is a dumb reflection conduit; all sort,
 comparison, and structure is host Ruby + this harness.
 
 ## Scorecard (byte-equality, against the VENDORED vectors)
-- selection_ranges:   35/35  GREEN
-- folding_ranges:     48/48  GREEN  (statements-range vs simple-range, comment/import runs, def multiline split; document order)
-- document_highlight: 16/16  GREEN  (identifier match + structural keyword-pairs; document order)
-- document_symbol:    13/13  GREEN  (of 14 exp.json — the 14th is OUT OF SCOPE, see below)
+- selection_ranges:    35/35  GREEN
+- folding_ranges:      48/48  GREEN  (statements-range vs simple-range, comment/import runs, def multiline split; document order)
+- document_highlight:  16/16  GREEN  (identifier match + structural keyword-pairs; document order)
+- document_symbol:     13/13  GREEN  (of 14 exp.json — the 14th is OUT OF SCOPE, see below)
+- code_actions:          5/5  GREEN  (offer shape: extract pair on selection, toggle rules, attr family, quickfix passthrough)
+- code_action_resolve: 22/22  GREEN  (Extract Variable/Method, Toggle block style, Create Attribute R/W/A — WorkspaceEdits byte-equal)
 
-Total: 112/112 across the four document-order structural features.
+Total: 139/139 across the six replayed features.
 
 ## Out of scope by design (documented divergences, NOT gaps)
 These are cases where ruby-lsp's behavior comes from its CRuby/Rake/RBS world,
@@ -85,8 +92,6 @@ Need the SEMANTIC comparator (sort-aware + shared-subset) before they can score:
 - semantic_highlighting: 38
 
 Implemented (oracle-contract-verified) but NOT yet replayed against these vectors:
-- code_action_resolve:  22
-- code_actions:          5
 - code_lens:             5
 - diagnostics:           5
 - document_link:         2
@@ -95,8 +100,8 @@ Implemented (oracle-contract-verified) but NOT yet replayed against these vector
 
 Empty upstream dirs (no vectors): code_actions_formatting, formatting — N/A.
 
-Inventory at this pin: 207 exp.json total; 112 scored green; 1 out-of-scope
-(document_symbol/rake); ~94 unscored.
+Inventory at this pin: 207 exp.json total; 139 scored green; 1 out-of-scope
+(document_symbol/rake); ~67 unscored.
 
 A test only goes GREEN when our output equals ruby-lsp's on everything that MUST
 be equal (per the semantic rule above). Harness mechanics (request shape) may be
