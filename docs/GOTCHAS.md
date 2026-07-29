@@ -406,8 +406,11 @@ semantics (verified by running mruby — see test/overlay/mruby_semantics_test.r
 - alias / alias_method — new name, snapshot of the target's current signature
 - define_method(:literal) — added, PUBLIC regardless of surrounding private (mruby
   diverges from CRuby here)
-- module_function :name — explicit-arg only: adds a PUBLIC singleton copy, leaves
-  the instance method public (no privatization); bare form is INERT in mruby
+- module_function :name — adds a PUBLIC singleton copy AND makes the instance
+  method PRIVATE (mruby HEAD matches CRuby here since 2026-07; the instance
+  copy used to stay public). Bare form: mode switch, same public-singleton +
+  private-instance treatment for subsequent defs until a bare visibility verb
+  resets the scope (also matches CRuby since 2026-07; was previously inert)
 - undef / undef_method — tombstone (Entry kind :undef): blocks the name even when
   an ancestor defines it; carried through the MRO walk in visible_methods
 - remove_method — own copy only (Entry kind :remove): drops the class's own copy
@@ -415,8 +418,7 @@ semantics (verified by running mruby — see test/overlay/mruby_semantics_test.r
   in mruby (we no-op)
 - include / prepend — ancestry (merged into the MRO, see the boundary-lifted note)
 
-Deliberately NOT modeled: `private_constant` (absent from mruby entirely) and
-`module_function`'s bare/privatizing CRuby behavior (mruby doesn't do it). Names
+Deliberately NOT modeled: `private_constant` (absent from mruby entirely). Names
 computed at runtime (`define_method(var)`, `send(:undef_method, x)`) are
 undecidable without eval and are skipped — there the post-build VM stays truth.
 

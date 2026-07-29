@@ -57,10 +57,12 @@ SCRIPT = <<~'MRB'
   class DM; private; define_method(:dm) { }; end
   line("define_method_public_despite_private", DM.instance_methods.include?(:dm) ? "yes" : "no")
 
-  # module_function: explicit arg adds public singleton; instance stays public
+  # module_function: explicit arg adds public singleton; instance becomes
+  # private (mruby HEAD matches CRuby here since 2026-07; explicit-arg form
+  # was public-instance before)
   module MF; def helper; "h"; end; module_function :helper; end
   line("module_function_singleton", (begin; MF.helper; "yes"; rescue; "no"; end))
-  line("module_function_instance_stays_public", MF.instance_methods.include?(:helper) ? "yes" : "no")
+  line("module_function_instance_becomes_private", MF.instance_methods.include?(:helper) ? "no" : "yes")
   # bare module_function applies to subsequent defs: public singleton copy,
   # instance goes PRIVATE (mruby HEAD matches CRuby here since 2026-07; the
   # bare form was inert in mruby before). A bare visibility verb ends the mode.
@@ -86,7 +88,7 @@ EXPECT = {
   "private_in_private_instance_methods" => "yes",
   "define_method_public_despite_private" => "yes",
   "module_function_singleton" => "yes",
-  "module_function_instance_stays_public" => "yes",
+  "module_function_instance_becomes_private" => "yes",
   "module_function_bare_singleton" => "yes",
   "module_function_bare_instance_private" => "yes",
   "module_function_bare_ends_at_public" => "yes",

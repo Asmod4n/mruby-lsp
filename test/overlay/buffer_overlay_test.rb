@@ -95,6 +95,23 @@ harvest(idx, "file:///str.rb", "class String\n  undef_method :upcase\nend\n", 0)
 check.("buffer undef removes a compiled method", names(idx.visible_methods("String")).include?("upcase"), false)
 check.("  sibling compiled method stays", names(idx.visible_methods("String")).include?("downcase"), true)
 
+# ===== 6b. explicit-arg module_function: singleton copy + instance becomes
+# private (mruby HEAD matches CRuby here since 2026-07 — VM-pinned in
+# mruby_semantics_test.rb; the instance copy used to stay public).
+idx = MrubyLsp::Index.new
+idx.set_ancestors("Object", %w[Object Kernel BasicObject])
+src6b = <<~RB
+  module MF3
+    def helper; end
+    module_function :helper
+  end
+RB
+harvest(idx, "file:///mf3.rb", src6b, 0)
+sing6b = idx.singleton_methods_of("MF3").map { |e| e.name.split(/[#.]/).last }.sort.uniq
+check.("explicit-arg module_function adds singleton copy", sing6b.include?("helper"), true)
+check.("  instance copy became private", names(idx.methods_of("MF3")).include?("helper"), false)
+check.("  private table carries the copy", names(idx.private_methods_of("MF3")).include?("helper"), true)
+
 # ===== 7. bare module_function: singleton copy + private instance, until a
 # bare visibility verb resets the scope (mruby HEAD matches CRuby here since
 # 2026-07 — VM-pinned in mruby_semantics_test.rb). Class bodies unaffected
