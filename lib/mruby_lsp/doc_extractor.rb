@@ -37,9 +37,11 @@ module MrubyLsp
     private
 
     def build_ruby_table(path)
-      # UTF-8, not the process default (US-ASCII with LANG unset): see
-      # Index#read_source.
-      source = File.read(path, encoding: "BINARY").force_encoding("UTF-8").scrub
+      # UTF-8, stated, never scrubbed: see Index#read_source. A file we cannot
+      # serve has no doc table, which is one missing answer.
+      source = File.read(path, encoding: "UTF-8")
+      return {} unless source.valid_encoding?
+
       result = Prism.parse(source)
 
       # Map comment line -> text, for contiguous-block lookup.
@@ -56,6 +58,8 @@ module MrubyLsp
         table[def_line] = doc if doc
       end
       table
+    rescue SystemCallError, IOError
+      {}
     end
 
     def each_def_node(node, &block)

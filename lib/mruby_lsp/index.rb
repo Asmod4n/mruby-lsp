@@ -820,12 +820,18 @@ module MrubyLsp
       mt && InlineType.return_class_name(mt)
     end
 
-    # A Ruby source as text, read as UTF-8 and scrubbed rather than through the
-    # process default encoding (US-ASCII with LANG unset), which makes every
-    # file with one accented comment character invalid and raises on the first
-    # scan of it. Same rule as CTypeResolver#source_text.
+    # A Ruby source as text, or nil when it cannot be served. Read as UTF-8,
+    # stated, rather than through the process default encoding (US-ASCII with
+    # LANG unset), which makes every file with one accented comment character
+    # invalid and raises on the first scan of it. Never scrubbed: Prism's
+    # offsets against this text are the positions the editor sees, so a byte
+    # we replaced is a position we lied about. Not UTF-8 -> nil, one missing
+    # answer. Same rule as CTypeResolver#source_text.
     def read_source(path)
-      File.read(path, encoding: "BINARY").force_encoding("UTF-8").scrub
+      text = File.read(path, encoding: "UTF-8")
+      text.valid_encoding? ? text : nil
+    rescue SystemCallError, IOError
+      nil
     end
 
     def source_lines(uri)
@@ -833,7 +839,7 @@ module MrubyLsp
       @source_lines_memo[uri] =
         begin
           path = uri.sub(%r{\Afile://}, "")
-          File.file?(path) ? read_source(path).lines : nil
+          File.file?(path) ? read_source(path)&.lines : nil
         rescue StandardError
           nil
         end
@@ -852,7 +858,7 @@ module MrubyLsp
       @source_ast_memo[uri] =
         begin
           path = uri.sub(%r{\Afile://}, "")
-          File.file?(path) ? Prism.parse(read_source(path)) : nil
+          (File.file?(path) && (text = read_source(path))) ? Prism.parse(text) : nil
         rescue StandardError
           nil
         end
