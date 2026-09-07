@@ -1058,3 +1058,37 @@ pointless full rebuild).
 
 Neither layer touches the fast path: a routine gem update leaves the table
 identical and the probe passes — setup stays the incremental no-op.
+
+## An exception out of a request handler silences the server for the session
+
+CI on `main` went red with one line, `TIMEOUT waiting for server readiness`,
+from `test/consistency`: 120 seconds of a server that was up and answered
+nothing. The cause was one stderr line nothing in that step captures:
+
+```
+c_type_resolver.rb:in `read': No such file or directory @ rb_sysopen -
+./mrbgems/mruby-regexp/src/regexp.c (Errno::ENOENT)
+```
+
+addr2line reports the path the COMPILER recorded, and mruby's build records a
+relative one for its gems — relative to the mruby root, never to our cwd, and
+`test/consistency` starts the server with `cmd_cwd` set to the mruby-lsp
+checkout. `NativeResolver#absolute` expands it against the root now.
+
+The fault with teeth is the second one: the raise left the handler and killed
+the thread `BaseServer` runs requests on. The process stays up and the socket
+stays open, so every later request gets no answer for the rest of the session
+— a silent server that reads like a hang. Anything a handler touches that came
+from a tool's output (a path, a name, a line) must degrade, never raise: a
+source the server cannot read is nil, one missing answer.
+
+Same shape, same fix: read sources as UTF-8 by statement, never through the
+locale. An editor's `cmd_env` carries no `LANG`, Ruby then defaults to
+US-ASCII, one byte over 127 makes the whole string invalid, and the first scan
+raises — mruby's own `src/string.c` has three such bytes. And never scrub: the
+text goes to clangd as the file's content and to Prism for offsets, so a
+replaced byte is a position the server lies about. Not valid UTF-8 is nil.
+
+Reproducing it needs the real shape: CI's mruby HEAD build, clangd present,
+and a trimmed environment from a cwd outside the mruby tree. Any one missing
+and it passes.

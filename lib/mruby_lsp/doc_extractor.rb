@@ -36,7 +36,9 @@ module MrubyLsp
     private
 
     def build_ruby_table(path)
-      source = File.read(path)
+      source = File.read(path, encoding: "UTF-8")
+      return {} unless source.valid_encoding?
+
       result = Prism.parse(source)
 
       # Map comment line -> text, for contiguous-block lookup.
@@ -53,6 +55,8 @@ module MrubyLsp
         table[def_line] = doc if doc
       end
       table
+    rescue SystemCallError, IOError
+      {}
     end
 
     def each_def_node(node, &block)

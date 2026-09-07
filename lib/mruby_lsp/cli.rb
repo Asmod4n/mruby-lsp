@@ -42,6 +42,8 @@ module MrubyLsp
     end
 
     def run(role, argv)
+      # Every source is UTF-8; the locale, often absent under an editor, gets no vote.
+      Encoding.default_external = Encoding::UTF_8
       case role
       when "server"
         run_server(argv)

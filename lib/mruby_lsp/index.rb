@@ -820,12 +820,22 @@ module MrubyLsp
       mt && InlineType.return_class_name(mt)
     end
 
+    # A Ruby source as text, or nil. UTF-8 stated, never the locale's default;
+    # never scrubbed, since Prism's offsets against it are the editor's
+    # positions. Same rule as CTypeResolver#source_text.
+    def read_source(path)
+      text = File.read(path, encoding: "UTF-8")
+      text.valid_encoding? ? text : nil
+    rescue SystemCallError, IOError
+      nil
+    end
+
     def source_lines(uri)
       return @source_lines_memo[uri] if @source_lines_memo.key?(uri)
       @source_lines_memo[uri] =
         begin
           path = uri.sub(%r{\Afile://}, "")
-          File.file?(path) ? File.readlines(path) : nil
+          File.file?(path) ? read_source(path)&.lines : nil
         rescue StandardError
           nil
         end
@@ -844,7 +854,7 @@ module MrubyLsp
       @source_ast_memo[uri] =
         begin
           path = uri.sub(%r{\Afile://}, "")
-          File.file?(path) ? Prism.parse(File.read(path)) : nil
+          (File.file?(path) && (text = read_source(path))) ? Prism.parse(text) : nil
         rescue StandardError
           nil
         end

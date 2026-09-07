@@ -171,6 +171,15 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- **A C source the server cannot read no longer kills the session.** addr2line
+  reports the path the compiler recorded — relative, for mruby's gems — and the
+  `Errno::ENOENT` from reading it left the request handler, killed the thread
+  requests run on, and left a server that stayed up and answered nothing. This
+  is what turned CI red on `main`. Relative paths resolve against the mruby
+  root; a file that still cannot be read, or is not valid UTF-8, is one missing
+  answer. Sources are read as UTF-8 by statement, and the process default is
+  UTF-8, so an editor's trimmed environment without `LANG` cannot make a file
+  unreadable.
 - **The refactor code actions actually apply now.** The server advertised
   `resolveProvider: true` and offered *Extract Variable*, *Extract Method*,
   and *Toggle block style*, but had no `codeAction/resolve` handler — invoking

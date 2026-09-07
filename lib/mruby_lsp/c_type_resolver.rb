@@ -164,20 +164,28 @@ module MrubyLsp
       nil
     end
 
+    # A C source as text, or nil. The path comes from addr2line and may not
+    # exist here; a raise would kill the request thread and the server would
+    # answer nothing for the rest of the session. UTF-8 stated, never the
+    # locale's default; not valid UTF-8 is nil too, never rewritten bytes --
+    # this text is what clangd receives and what ranges are measured against.
+    def source_text(file)
+      text = File.read(file, encoding: "UTF-8")
+      text.valid_encoding? ? text : nil
+    rescue SystemCallError, IOError
+      nil
+    end
+
     def source_lines(file)
       @src_lines ||= {}
       return @src_lines[file] if @src_lines.key?(file)
-      @src_lines[file] = begin
-        File.readlines(file, chomp: true)
-      rescue StandardError
-        nil
-      end
+      @src_lines[file] = source_text(file)&.lines(chomp: true)
     end
 
     def compute_doc(file, func)
       return nil unless ranges_for(file) # ensures the TU is open + parsed
       uri = "file://#{file}"
-      src = File.read(file)
+      src = source_text(file) or return nil
       # clangd fills a completion item\'s documentation with the comment ALONE
       # (no signature/params/decl blob, unlike hover) -- but only at a USE site,
       # which a definition has none of. So feed clangd one: append a throwaway
@@ -205,10 +213,14 @@ module MrubyLsp
     # SymbolInformation[] (flat, location.range); functions are SymbolKind 12.
     def ranges_for(file)
       return @ranges[file] if @ranges.key?(file)
+
+      text = source_text(file)
+      return @ranges[file] = nil unless text
+
       @ranges[file] =
         begin
           uri = "file://#{file}"
-          @client.did_open(uri, File.read(file))
+          @client.did_open(uri, text)
           syms = @client.request("textDocument/documentSymbol", textDocument: { uri: uri }) || []
           map = {}
           syms.each do |s|
