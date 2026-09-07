@@ -199,7 +199,7 @@ module MrubyLsp
       !a.nil? && ln >= a && ln <= b
     end
 
-    # A C source as text, or nil when it cannot be read.
+    # A C source as text, or nil when it cannot be served.
     #
     # Two ways this used to take the whole session down, both ending the same
     # way: the exception left the request thread, the thread died, and the
@@ -210,12 +210,18 @@ module MrubyLsp
     #    those against the mruby root now, but a path we still cannot open is
     #    normal (a moved build, a stripped binary, a gem built elsewhere) and
     #    must cost one missing answer, not the session.
-    # 2. Read as UTF-8, never through the process default encoding: with LANG
-    #    unset that default is US-ASCII, one source byte over 127 makes every
-    #    string from the file invalid, and the first scan of one raises
-    #    ArgumentError. mruby's own src/string.c carries three such bytes.
+    # 2. Read as UTF-8, stated, never through the process default encoding:
+    #    with LANG unset that default is US-ASCII, one source byte over 127
+    #    makes every string from the file invalid, and the first scan of one
+    #    raises ArgumentError. mruby's own src/string.c carries three.
+    #
+    # Never scrub. This text goes to clangd as the file's content and its
+    # lines are what ranges are measured against; a byte we replaced is a
+    # position we lied about. A file that is not valid UTF-8 is a file we
+    # cannot serve, and that is nil, the same one missing answer as ENOENT.
     def source_text(file)
-      File.read(file, encoding: "BINARY").force_encoding("UTF-8").scrub
+      text = File.read(file, encoding: "UTF-8")
+      text.valid_encoding? ? text : nil
     rescue SystemCallError, IOError
       nil
     end

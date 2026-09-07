@@ -41,26 +41,9 @@ module MrubyLsp
        "--", role, *args]
     end
 
-    # Everything this server reads is UTF-8 -- mruby's sources, the project's
-    # Ruby, our own files -- and the locale must not get a vote. An editor
-    # launches us with a trimmed environment (Neovim's vim.lsp passes cmd_env
-    # with PATH and HOME and nothing else), so LANG is often absent and Ruby
-    # then defaults to US-ASCII. One byte over 127 in a source file -- mruby's
-    # own src/string.c carries three -- makes every string read from it
-    # invalid, and the first scan of one raises ArgumentError inside the
-    # request thread. That thread dies, the server stays up, and it answers
-    # nothing for the rest of the session. Say UTF-8 once, here, for every
-    # role, so no reader has to remember.
-    def force_utf8
-      Encoding.default_external = Encoding::UTF_8
-    rescue StandardError
-      # A frozen or unusual Encoding setup is not worth failing to start over;
-      # every source read states its own encoding as well.
-      nil
-    end
-
     def run(role, argv)
-      force_utf8
+      # Every source is UTF-8; the locale, often absent under an editor, gets no vote.
+      Encoding.default_external = Encoding::UTF_8
       case role
       when "server"
         run_server(argv)

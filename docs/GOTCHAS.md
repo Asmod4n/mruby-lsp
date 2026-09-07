@@ -1119,9 +1119,14 @@ died, and with it every C answer for the rest of the session, while the server
 stayed up and answered Ruby-only requests normally. One accented character in
 one core C comment was enough to take the whole C side down.
 
-The read must state the encoding and scrub what it cannot decode
-(`File.read(path, encoding: "BINARY").force_encoding("UTF-8").scrub`) — degrade,
-don't crash. Fixed at every source read: `CTypeResolver#source_text`,
+The read must state the encoding: `File.read(path, encoding: "UTF-8")`, and
+`CLI.run` sets `Encoding.default_external` to UTF-8 for every role so nothing
+depends on the locale. What it must NOT do is scrub. A scrubbed file is a
+rewritten file: its text goes to clangd as the file's content and to Prism for
+offsets, so every byte replaced is a position the server then lies about, to
+the editor and to clangd both. A file that is not valid UTF-8 is a file we
+cannot serve — `valid_encoding?` false is nil, the same one missing answer as
+ENOENT. Degrade, don't crash, and never launder. Fixed at every source read: `CTypeResolver#source_text`,
 `Index#read_source`, `DocExtractor#build_ruby_table`. `Server#harvest_test_types`
 already did the right thing and is where the pattern comes from.
 
