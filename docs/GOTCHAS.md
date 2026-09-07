@@ -192,15 +192,23 @@ reported once (rename already does this via its `seen` set).
   decides where a glyph sits on the editor's screen. (This is what the
   multibyte_characters fix addresses; it is NOT rooted in mruby.)
 - mruby STRING SEMANTICS (String#length, indexing, regex/match offsets): rooted
-  in mruby. Our build has MRB_UTF8_STRING OFF (default), so strings are bytes:
-  "動物".length==6, "動物"[0]=="\xe5". With MRB_UTF8_STRING ON they'd be char-
-  based. So any surface that reports mruby's own string measurements is
-  PROJECT-CONFIG-DEPENDENT and must mirror the project's mrbconf, not host CRuby.
-  We surface none today -> no current bug. If we ever do, detect the project's
-  setting straight from the reflect.so (it's compiled against the project mruby):
-  expose a compile-time `#ifdef MRB_UTF8_STRING` predicate (utf8_strings?) — no
-  eval. Reflected NAMES already round-trip fine (C-ext tags UTF-8; symbol bytes
-  are config-independent).
+  in mruby. The REFLECTION VM is built with MRB_UTF8_STRING now, so its strings
+  are char-based; without it they are bytes ("動物".length==6,
+  "動物"[0]=="\xe5"). That is not a mirroring decision: this VM never runs
+  project code — setup opens it, walks its class and method graph, and closes it
+  — so its string semantics are not a behaviour we reproduce, they are how the
+  names we read are measured, and every name that crosses to the editor is UTF-8
+  by the protocol. Safe to change under a user because NativeFingerprint hashes
+  share/wrapper_build_config.rb: a workspace built before the define reads as
+  stale and is rebuilt from clean, never mixed. The define changes how string.c
+  walks characters, not struct RString, so the reflect .so keeps its ABI with
+  the rebuilt libmruby.
+  A surface that reports the PROJECT's own string measurements is a different
+  question and stays project-config-dependent; we surface none today. If we ever
+  do, detect that setting straight from the reflect.so (it's compiled against
+  the project mruby): expose a compile-time `#ifdef MRB_UTF8_STRING` predicate
+  (utf8_strings?) — no eval. Reflected NAMES already round-trip fine (C-ext tags
+  UTF-8; symbol bytes are config-independent).
 
 ## Confinement must be PRE-Ruby; "am I confined?" is read from the kernel
 The launcher confines in a trusted context — a small STATIC binary, BEFORE Ruby

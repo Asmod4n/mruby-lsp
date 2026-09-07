@@ -183,6 +183,20 @@ module MRubyLSPInject
       conf.cc.flags     << '-fPIC'
       conf.cxx.flags    << '-fPIC'
       conf.linker.flags << '-fPIC'
+
+      # UTF-8 strings, whatever the user's own build does. This VM never runs
+      # project code -- it is opened, walked for its class and method graph, and
+      # closed -- so mruby's string semantics are not a behaviour we have to
+      # mirror here, they are how the names we read are measured. Off (the
+      # default) a name is bytes: "動物".length is 6 and indexing lands
+      # mid-character. Every name that crosses to the editor is UTF-8 by the
+      # protocol, so the VM that produces them should agree.
+      #
+      # Safe to change under us: NativeFingerprint hashes this file, so a
+      # workspace built before this define reads as stale and setup rebuilds it
+      # from clean rather than mixing objects from two configurations.
+      conf.cc.defines  << 'MRB_UTF8_STRING'
+      conf.cxx.defines << 'MRB_UTF8_STRING'
     end
   end
 end

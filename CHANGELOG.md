@@ -170,6 +170,15 @@ what mruby "usually" has.
   `bundle` field in the manifest) rather than the version, so a changed gem set
   triggers exactly one reinstall, independent of the SemVer.
 
+### Changed
+- **The reflection VM is built with `MRB_UTF8_STRING`.** It never runs project
+  code — setup opens it, walks its class and method graph, and closes it — so
+  its string semantics are not a behaviour to mirror from the user's build, they
+  are how the names we read are measured, and every name that reaches the editor
+  is UTF-8 by the protocol. A workspace built before this reads as stale
+  (`NativeFingerprint` hashes the wrapper build config) and is rebuilt from
+  clean rather than mixing objects from two configurations.
+
 ### Fixed
 - **A C source path the server cannot open no longer kills the session.**
   addr2line reports the path the compiler recorded, and mruby's build records a
