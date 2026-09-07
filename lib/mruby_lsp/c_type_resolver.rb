@@ -43,11 +43,13 @@ module MrubyLsp
     # The function's leading doc comment, VERBATIM (clangd's documentation for
     # the symbol). nil if clangd is dead, the function isn't found, or there is
     # no comment. Not reformatted -- a future rbs pass parses the raw text.
-    def doc(file, func)
+    # `line` is the definition line addr2line reported with the name; it places
+    # a C++ function whose name clangd spells differently (see #symbol_for).
+    def doc(file, func, line = nil)
       return nil unless alive? && file && func
       key = [file, func]
       return @docs[key] if @docs.key?(key)
-      @docs[key] = compute_doc(file, func)
+      @docs[key] = compute_doc(file, func, line)
     end
 
     # The REAL parameter names of a C method, parsed from its `mrb_get_args`
@@ -56,37 +58,37 @@ module MrubyLsp
     # own Method#parameters: it carries the author's names AND the true
     # req/opt/rest/block split. Bounded to the one function via clangd's symbol
     # range so we never read a neighbour's call. Lazy + memoized per function.
-    def arg_specs(file, func)
+    def arg_specs(file, func, line = nil)
       return nil unless alive? && file && func
       key = [file, func]
       return @params[key] if @params.key?(key)
-      @params[key] = compute_arg_specs(file, func)
+      @params[key] = compute_arg_specs(file, func, line)
     end
 
     # The block parameter NAMES of a C method, read from what it hands its block
     # (mrb_yield / mrb_funcall on the captured block var -- see BlockParams). ->
     # [name, ...] or nil. Lazy + memoized per function, like arg_specs.
-    def yield_args(file, func)
+    def yield_args(file, func, line = nil)
       return nil unless alive? && file && func
       key = [file, func]
       return @yields[key] if @yields.key?(key)
-      @yields[key] = BlockParams.from_c(function_body(file, func))
+      @yields[key] = BlockParams.from_c(function_body(file, func, line))
     end
 
     # file: absolute C source path; func: the C function name. -> class | nil.
-    def resolve(file, func)
+    def resolve(file, func, line = nil)
       return nil unless alive? && file && func
       key = [file, func]
       return @types[key] if @types.key?(key)
-      @types[key] = compute(file, func)
+      @types[key] = compute(file, func, line)
     end
 
     private
 
     # THIS function's body text, bounded to clangd's symbol range so a scan never
     # picks up a neighbour's call. nil when clangd can't place the function.
-    def function_body(file, func)
-      rng = ranges_for(file)&.dig(func, :range)
+    def function_body(file, func, line = nil)
+      rng = symbol_for(file, func, line)&.dig(:range)
       return nil unless rng
       lines = source_lines(file)
       return nil unless lines
@@ -96,13 +98,13 @@ module MrubyLsp
       lines[a..b]&.join("\n")
     end
 
-    def compute_arg_specs(file, func)
-      body = function_body(file, func) or return nil
+    def compute_arg_specs(file, func, line = nil)
+      body = function_body(file, func, line) or return nil
       GetArgs.specs(body)
     end
 
-    def compute(file, func)
-      rng = ranges_for(file)&.dig(func, :range)
+    def compute(file, func, line = nil)
+      rng = symbol_for(file, func, line)&.dig(:range)
       return nil unless rng
       # A hand-written `//:` annotation above the function is the contract and
       # wins over the clangd-AST inference (symmetric with the Ruby `#:` path).
@@ -164,33 +166,92 @@ module MrubyLsp
       nil
     end
 
+    # The clangd symbol a name from addr2line stands for. In C the two spell a
+    # function the same. In C++ they do not: addr2line reports the demangled,
+    # QUALIFIED definition -- "webmachine::(anonymous namespace)::watcher_events
+    # (mrb_state*, mrb_value)" -- while clangd's documentSymbol carries the bare
+    # "watcher_events". So a name lookup misses every function of the gem, and
+    # Stage 3, the C doc comments and the real parameter names all go dark for
+    # it. One .cpp anywhere makes mruby build the whole gem with the C++
+    # compiler, so this is an ordinary mruby gem, not a corner case.
+    #
+    # Do not take the name apart -- a demangled name is structured text (the
+    # first "(" here opens "(anonymous namespace)", not the parameter list).
+    # addr2line reports the definition's own LINE beside the name, so the
+    # fallback is structural: the function whose clangd range holds that line.
+    # Only an unambiguous hit counts, so a line that lands between functions
+    # resolves to nothing rather than to a neighbour.
+    def symbol_for(file, func, line = nil)
+      map = ranges_for(file) or return nil
+      named = map[func]
+      return named if named
+      return nil unless line
+
+      ln = line.to_i - 1 # addr2line counts lines from 1, LSP ranges from 0
+      return nil if ln.negative?
+      hits = map.each_value.select { |s| covers?(s[:range], ln) }
+      hits.size == 1 ? hits.first : nil
+    end
+
+    def covers?(range, ln)
+      a = range.dig(:start, :line)
+      b = range.dig(:end, :line) || a
+      !a.nil? && ln >= a && ln <= b
+    end
+
+    # A C source as text. Read as UTF-8 and scrubbed, NEVER through the process
+    # default encoding: with LANG unset that default is US-ASCII, every source
+    # byte over 127 makes the string invalid, and the first scan of it
+    # (GetArgs' mrb_get_args match) raises ArgumentError -- inside the request
+    # thread, which dies and takes every C answer of the session with it. One
+    # comment character in one core file was enough. Degrade, don't crash.
+    def source_text(file)
+      File.read(file, encoding: "BINARY").force_encoding("UTF-8").scrub
+    end
+
     def source_lines(file)
       @src_lines ||= {}
       return @src_lines[file] if @src_lines.key?(file)
       @src_lines[file] = begin
-        File.readlines(file, chomp: true)
+        source_text(file).lines(chomp: true)
       rescue StandardError
         nil
       end
     end
 
-    def compute_doc(file, func)
-      return nil unless ranges_for(file) # ensures the TU is open + parsed
+    def compute_doc(file, func, line = nil)
+      sym = symbol_for(file, func, line) # ensures the TU is open + parsed
+      return nil unless sym
+      name = sym[:name]
       uri = "file://#{file}"
-      src = File.read(file)
+      src = source_text(file)
       # clangd fills a completion item\'s documentation with the comment ALONE
       # (no signature/params/decl blob, unlike hover) -- but only at a USE site,
-      # which a definition has none of. So feed clangd one: append a throwaway
-      # function naming this symbol, complete there, read its documentation, then
-      # restore the buffer. The REAL uri keeps the real compile flags so the TU
-      # parses; the stub is appended, so cached ranges stay valid.
-      head = "void __mruby_lsp_doc_probe__(void){(void)#{func[0, func.length - 1]}"
-      @client.did_change(uri, "#{src}\n#{head}\n;}\n")
-      pos = { line: src.lines.size + 1, character: head.length }
+      # which a definition has none of. So feed clangd one: a throwaway function
+      # naming this symbol, complete there, read its documentation, then restore
+      # the buffer. The REAL uri keeps the real compile flags so the TU parses.
+      #
+      # The stub goes on the line right AFTER the definition, not at the end of
+      # the file. A C++ gem defines its methods in a namespace -- usually an
+      # anonymous one -- and at file scope the name is not visible, so an
+      # appended stub completes to nothing and every C++ method loses its doc
+      # comment. Directly after the definition the stub sits in the function's
+      # own scope, whatever that is, and the same line serves C. It is the
+      # structural answer: the range is the one clangd itself reported.
+      lines = src.lines
+      last = sym.dig(:range, :end, :line)
+      at = last ? last + 1 : lines.size
+      at = lines.size if at > lines.size
+      # A file whose last line has no newline would glue the stub onto it.
+      lines[at - 1] = "#{lines[at - 1]}\n" if at.positive? && !lines[at - 1].to_s.end_with?("\n")
+      head = "void __mruby_lsp_doc_probe__(void){(void)#{name[0, name.length - 1]}"
+      lines.insert(at, "#{head}\n;}\n")
+      @client.did_change(uri, lines.join)
+      pos = { line: at, character: head.length }
       res = @client.request("textDocument/completion", textDocument: { uri: uri }, position: pos)
       items = res.is_a?(Hash) ? res[:items] : res
       item = Array(items).find do |i|
-        [i[:label], i[:filterText], i[:insertText]].compact.any? { |x| x.to_s.strip == func }
+        [i[:label], i[:filterText], i[:insertText]].compact.any? { |x| x.to_s.strip == name }
       end
       return nil unless item
       doc = item[:documentation]
@@ -208,7 +269,7 @@ module MrubyLsp
       @ranges[file] =
         begin
           uri = "file://#{file}"
-          @client.did_open(uri, File.read(file))
+          @client.did_open(uri, source_text(file))
           syms = @client.request("textDocument/documentSymbol", textDocument: { uri: uri }) || []
           map = {}
           syms.each do |s|
@@ -219,7 +280,7 @@ module MrubyLsp
             # for flat SymbolInformation, location.range is the symbol itself.
             # pos drives hover (must sit ON the symbol); range drives the AST.
             pos = (s[:selectionRange] || r)[:start]
-            map[s[:name]] = { range: r, pos: pos }
+            map[s[:name]] = { name: s[:name], range: r, pos: pos }
           end
           map
         end

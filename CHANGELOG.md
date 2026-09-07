@@ -171,6 +171,27 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- **A C++ gem gets its C types, docs, and parameter names.** One `.cpp`
+  anywhere makes mruby build a whole gem with the C++ compiler, and a C++
+  definition is named two ways: addr2line reports the demangled, qualified
+  `ns::(anonymous namespace)::f(mrb_state*, mrb_value)`, while clangd's
+  documentSymbol carries the bare `f`. Every lookup went by that name, so it
+  missed, and Stage 3 return types, the C doc comments (`//:` annotations
+  included) and the real `mrb_get_args` parameter names were all silently off
+  for such a gem — the whole C side of it. The lookup now falls back to the
+  function whose clangd range holds the definition line addr2line reports
+  beside the name (structural; a demangled name is never taken apart), and
+  only an unambiguous hit counts. The doc probe moved from the end of the file
+  to the line right after the definition, so it sits in the function's own
+  namespace, where the name is visible. Verified live against a C++ gem
+  (`request.path` → String, `w.events` → Symbol, doc comment and
+  `set_cookie(name, value, attrs = ...)` on hover) with core C unchanged.
+- **A source file is read as UTF-8, not through the process default
+  encoding.** With `LANG` unset that default is US-ASCII, so one byte over 127
+  anywhere in a C or Ruby source made the string invalid and the first scan of
+  it (`mrb_get_args`, an annotation line) raised `ArgumentError` — inside the
+  request thread, which died and took every C answer of the session with it.
+  One comment character in one core file was enough.
 - **The refactor code actions actually apply now.** The server advertised
   `resolveProvider: true` and offered *Extract Variable*, *Extract Method*,
   and *Toggle block style*, but had no `codeAction/resolve` handler — invoking

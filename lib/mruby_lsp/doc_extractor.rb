@@ -36,7 +36,9 @@ module MrubyLsp
     private
 
     def build_ruby_table(path)
-      source = File.read(path)
+      # UTF-8, not the process default (US-ASCII with LANG unset): see
+      # Index#read_source.
+      source = File.read(path, encoding: "BINARY").force_encoding("UTF-8").scrub
       result = Prism.parse(source)
 
       # Map comment line -> text, for contiguous-block lookup.

@@ -1058,3 +1058,61 @@ pointless full rebuild).
 
 Neither layer touches the fast path: a routine gem update leaves the table
 identical and the probe passes — setup stays the incremental no-op.
+
+## A C++ gem names its functions twice, and only clangd uses the short name
+
+One `.cpp` anywhere makes mruby compile a whole gem with the C++ compiler, so a
+"C" mrbgem is routinely C++ and its methods sit in a namespace — usually an
+anonymous one. That gives every function TWO names, and the Stage 3 pipeline
+crosses between them:
+
+- addr2line (CLocator, `-f -C`) reports the demangled DEFINITION:
+  `webmachine::(anonymous namespace)::watcher_events(mrb_state*, mrb_value)`.
+- clangd's documentSymbol reports the bare `watcher_events`.
+
+`CTypeResolver` keyed its symbol map on clangd's name and looked up addr2line's,
+so on a C++ gem EVERY lookup missed and three features went dark at once, with
+no error anywhere: Stage 3 return types (including hand-written `//:`
+annotations), the C doc comments, and the real `mrb_get_args` parameter names.
+Plain C is unaffected — both tools spell it the same — which is exactly why this
+survived four field tests: every one of them was a C gem.
+
+Do NOT repair it by taking the name apart. A demangled C++ name is structured
+text: the FIRST `(` here opens `(anonymous namespace)`, not the parameter list,
+so the obvious "cut at the paren" is wrong on the very case it is meant to fix.
+addr2line reports the definition's own LINE beside the name, so `symbol_for`
+falls back to the function whose clangd range CONTAINS that line, and accepts
+only an unambiguous hit (exactly one containing range) — a line that lands
+between functions resolves to nothing rather than to a neighbour. The line
+travels from `NativeResolver#resolve` (`info[:line]`, already there for
+definition links) through the four `Index` seams (`c_doc`, `c_signature`,
+`compute_yield_params`, `clangd_return_type`).
+
+Second half of the same bug: the doc probe appended its throwaway use site to
+the END of the file. At file scope a function in an anonymous namespace is not
+visible, so the completion offered nothing and every C++ method lost its
+comment. The probe now goes on the line right AFTER the definition, inside
+whatever scope the function lives in — one line that serves C and C++ alike.
+clangd's flat SymbolInformation carries an EMPTY `containerName` here, so
+rebuilding the namespace nesting from the symbol is not an option; the
+definition's own position is the only structural handle.
+
+Test: `test/overlay/c_symbol_lookup_test.rb` (stub client, no clangd, no VM).
+
+## Read a source file as UTF-8, never through the process default encoding
+
+`File.read` / `File.readlines` tag the result with `Encoding.default_external`,
+which follows the locale. With `LANG` unset — a container, a systemd unit, a
+cron job — that is US-ASCII, so one byte over 127 anywhere in the file makes
+every string from it invalid, and the FIRST scan of it raises
+`ArgumentError: invalid byte sequence in US-ASCII`. It raised in
+`ParamFormat::GetArgs.extract`, inside the request-handling thread: the thread
+died, and with it every C answer for the rest of the session, while the server
+stayed up and answered Ruby-only requests normally. One accented character in
+one core C comment was enough to take the whole C side down.
+
+The read must state the encoding and scrub what it cannot decode
+(`File.read(path, encoding: "BINARY").force_encoding("UTF-8").scrub`) — degrade,
+don't crash. Fixed at every source read: `CTypeResolver#source_text`,
+`Index#read_source`, `DocExtractor#build_ruby_table`. `Server#harvest_test_types`
+already did the right thing and is where the pattern comes from.
