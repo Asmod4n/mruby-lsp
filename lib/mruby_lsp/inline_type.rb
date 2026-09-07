@@ -39,6 +39,23 @@ module MrubyLsp
       parse(s[m.length..])
     end
 
+    # Is this comment LINE an annotation rather than prose? Two shapes: the
+    # source form with its marker (`#: () -> Foo`, `//: () -> Foo`), and the
+    # form a doc reader hands back once the comment leader is gone (`: () ->
+    # Foo`) -- clangd drops the `//`, DocExtractor drops the `#`. rbs decides
+    # which is which: the text after the colon must parse as a method type, so
+    # a prose line that merely starts with a colon is never taken for one.
+    def annotation_line?(line)
+      s = line.to_s.strip
+      m = MARKERS.find { |mk| s.start_with?(mk) }
+      payload = if m then s[m.length..]
+                elsif s.start_with?(":") then s[1..]
+                end
+      return false unless payload
+
+      !parse(payload).nil?
+    end
+
     # A bare method type (no marker) -> RBS::MethodType or nil.
     def parse(payload)
       payload = payload.strip

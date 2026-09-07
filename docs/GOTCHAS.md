@@ -1116,3 +1116,35 @@ The read must state the encoding and scrub what it cannot decode
 don't crash. Fixed at every source read: `CTypeResolver#source_text`,
 `Index#read_source`, `DocExtractor#build_ruby_table`. `Server#harvest_test_types`
 already did the right thing and is where the pattern comes from.
+
+## A workspace's own tests were never harvested, and a namespaced class pinned nothing
+
+The return-type source is the test suite, and the rule is per workspace: "each
+workspace compiles its own gem set, so its test corpus -> its types". Two things
+kept that from being true for any project that is not mruby itself.
+
+`Server#harvest_test_types` globbed `<mruby_root>/test` and
+`<mruby_root>/mrbgems/**/test`. A gem declared with `conf.gem path:` /
+`gemdir:` / `github:` has its source OUTSIDE the mruby tree — the same shape the
+`from_gem` origin rule already documents — so its suite was never read and the
+project could pin no type of its own. The workspace's own `test/**/*.rb` is read
+as well now, bounded to the gem layout's test dir, never a walk of the tree.
+
+`TestHarvester` then dropped every namespaced receiver: `constructor?` required
+a `ConstantReadNode`, so `Webmachine::Application.new` (a `ConstantPathNode`)
+attributed to nothing, and `const_name` read only the last segment. A gem's
+classes are namespaced and `Index#merge_test_types` looks the key up by the
+QUALIFIED name, so both halves had to keep the whole path. `constant_name`
+returns "Foo" / "Foo::Bar" for a plain constant chain and nil for anything else
+(`foo::Bar`, `self::X`) — never a guess.
+
+Watch what the VM actually has before writing a pin. A `Struct.new(...)`
+subclass keeps its READERS on the anonymous parent class, which the reflector
+does not surface, so `Webmachine::Config#port` is not in the index and
+`merge_test_types` correctly drops a type harvested for it (only the writers the
+subclass defines itself are there). The pin lands on a method the VM knows —
+`assert_kind_of Webmachine::Config, Webmachine::Application.new.conf` types
+`app.conf` for every consumer, and that attr_reader had no other source of truth
+at all: no C function to read, no value to infer.
+
+Verified live: `app.conf.` -> 123 Config items with both fixes, 0 without.

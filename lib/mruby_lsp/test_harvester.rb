@@ -152,7 +152,8 @@ module MrubyLsp
           next unless params.is_a?(Prism::BlockParametersNode)
           param = params.parameters&.requireds&.first
           next unless param.respond_to?(:name)
-          entries[param.name] << [n.block.location.start_offset, n.receiver.name.to_s]
+          klass = constant_name(n.receiver) or next
+          entries[param.name] << [n.block.location.start_offset, klass]
         end
       end
       entries
@@ -169,9 +170,9 @@ module MrubyLsp
       literal_type(node) ||
         case node
         when Prism::CallNode
-          node.receiver.name.to_s if constructor?(node)
-        when Prism::ConstantReadNode
-          node.name.to_s
+          constant_name(node.receiver) if constructor?(node)
+        when Prism::ConstantReadNode, Prism::ConstantPathNode
+          constant_name(node)
         when Prism::LocalVariableReadNode
           lookup(types, node.name, node.location.start_offset)
         end
@@ -179,8 +180,26 @@ module MrubyLsp
 
     def constructor?(call)
       call.is_a?(Prism::CallNode) &&
-        call.receiver.is_a?(Prism::ConstantReadNode) &&
+        !constant_name(call.receiver).nil? &&
         CONSTRUCTORS.include?(call.name)
+    end
+
+    # A constant's name AS WRITTEN: "Foo" or "Foo::Bar". nil for anything that
+    # is not a plain constant chain (`foo::Bar`, `self::X`). The path is kept
+    # whole because a gem's classes are namespaced and the index keys its
+    # entries by the qualified name -- the last segment alone resolves to
+    # nothing, so a namespaced test could pin no type at all.
+    def constant_name(node)
+      case node
+      when Prism::ConstantReadNode
+        node.name.to_s
+      when Prism::ConstantPathNode
+        return nil unless node.name
+        return node.name.to_s if node.parent.nil? # ::Foo
+
+        parent = constant_name(node.parent) or return nil
+        "#{parent}::#{node.name}"
+      end
     end
 
     # ---- small helpers ----
@@ -198,7 +217,7 @@ module MrubyLsp
     end
 
     def const_name(node)
-      node.name.to_s if node.is_a?(Prism::ConstantReadNode)
+      constant_name(node)
     end
 
     def walk(node, &blk)

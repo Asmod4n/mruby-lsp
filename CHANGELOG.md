@@ -171,6 +171,24 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- **A workspace types itself from its own test suite.** `harvest_test_types`
+  globbed only under the mruby root, so a gem built with `conf.gem path:` (or
+  `gemdir:`/`github:`) — whose source lives outside that tree — contributed
+  nothing, and a project could pin no type of its own even though the rule is
+  that a workspace's test corpus types that workspace. The workspace's own
+  `test/**/*.rb` is read as well now (bounded to the gem layout's test dir).
+  The harvester also keeps a constant's WHOLE path: a gem's classes are
+  namespaced and the index keys entries by the qualified name, so
+  `Foo::Bar.new` was attributed to nothing at all before. Together:
+  `assert_kind_of Webmachine::Config, Webmachine::Application.new.conf` in a
+  project's suite now types `app.conf` for every consumer.
+- **An inline annotation is no longer shown as documentation.** clangd counts a
+  `//:` line as part of the leading comment (with the `//` gone), so hover
+  ended with a stray `: () -> Hash` under the prose; the Ruby `#:` path had the
+  same wart. Both doc readers drop a line whose text after the colon parses as
+  an RBS method type — rbs decides, so prose that merely starts with a colon is
+  never mistaken for an annotation. The type is still surfaced, as the return
+  type.
 - **A C++ gem gets its C types, docs, and parameter names.** One `.cpp`
   anywhere makes mruby build a whole gem with the C++ compiler, and a C++
   definition is named two ways: addr2line reports the demangled, qualified

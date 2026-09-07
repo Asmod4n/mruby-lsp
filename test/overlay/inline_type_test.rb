@@ -47,6 +47,25 @@ check.("unbalanced",    IT.parse("(Integer"),    nil)
 check.("empty payload", IT.parse(""),            nil)
 check.("empty marker",  IT.extract("#:"),        nil)
 
+# ── an annotation LINE, as a doc reader hands it back ────────────────────────
+# clangd drops the `//` and DocExtractor drops the `#`, so a doc line arrives
+# as ": () -> Foo". rbs decides whether the text after the colon is a method
+# type, so prose that merely starts with a colon is never taken for one.
+[
+  ["//: () -> Hash", true],
+  ["#: (String) -> String", true],
+  [": () -> Hash", true],
+  ["  : (Integer) -> Integer  ", true],
+  [": () -> void", true],
+  ["RFC 6265 5.4: the Cookie header's k=v pairs", false],
+  ["call-seq: str.upcase => new_str", false],
+  [": not a type", false],
+  ["", false],
+].each do |line, want|
+  check.call("annotation_line? #{line.inspect}", MrubyLsp::InlineType.annotation_line?(line), want)
+end
+
+
 puts
-puts "inline_type failing=#{fail_count}/27"
+puts "inline_type failing=#{fail_count}/36"
 exit(fail_count.zero? ? 0 : 1)

@@ -554,7 +554,7 @@ module MrubyLsp
       ensure
         reflector.close
       end
-      harvest_test_types(MrubyLsp::Discovery::BuildDiscovery.resolve_mruby_root(@workspace))
+      harvest_test_types(MrubyLsp::Discovery::BuildDiscovery.resolve_mruby_root(@workspace), @workspace)
       attach_ctype_resolver(@index)
     end
 
@@ -564,10 +564,20 @@ module MrubyLsp
     # cannot infer (io_read -> String?). Reads the core + bundled-mgem tests under
     # the mruby root. Unreadable/binary files are skipped; a parse failure is
     # handled inside the harvester. No VM call, so it is cheap and crash-free.
-    def harvest_test_types(mruby_root)
-      return unless mruby_root && Dir.exist?(mruby_root)
-      files = Dir.glob(File.join(mruby_root, "test", "**", "*.rb")) +
-              Dir.glob(File.join(mruby_root, "mrbgems", "**", "test", "**", "*.rb"))
+    def harvest_test_types(mruby_root, workspace = nil)
+      files = []
+      if mruby_root && Dir.exist?(mruby_root)
+        files.concat(Dir.glob(File.join(mruby_root, "test", "**", "*.rb")))
+        files.concat(Dir.glob(File.join(mruby_root, "mrbgems", "**", "test", "**", "*.rb")))
+      end
+      # The workspace's OWN tests. A gem declared with `conf.gem path:` (or
+      # gemdir:/github:) has its source OUTSIDE the mruby tree, so the two globs
+      # above never reach it and the project could pin no type of its own --
+      # while the rule is that a workspace's test corpus types that workspace.
+      # Bounded to the gem layout's test dir, never a walk of the whole tree.
+      files.concat(Dir.glob(File.join(workspace, "test", "**", "*.rb"))) if workspace && Dir.exist?(workspace)
+      return if files.empty?
+
       sources = files.uniq.filter_map do |f|
         next unless File.file?(f) && File.readable?(f)
         s = File.read(f, encoding: "BINARY").force_encoding("UTF-8")

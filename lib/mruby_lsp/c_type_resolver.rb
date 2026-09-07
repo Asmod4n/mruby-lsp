@@ -256,10 +256,20 @@ module MrubyLsp
       return nil unless item
       doc = item[:documentation]
       doc = (@client.request("completionItem/resolve", item) || {})[:documentation] if doc.nil?
-      val = doc.is_a?(Hash) ? doc[:value] : doc
+      val = strip_annotations(doc.is_a?(Hash) ? doc[:value] : doc)
       (val && !val.to_s.strip.empty?) ? val.strip : nil
     ensure
       @client.did_change(uri, src) if defined?(src) && src
+    end
+
+    # A `//:` annotation is a contract, not documentation, and the type it
+    # names is already surfaced as the return type. clangd counts the line as
+    # part of the leading comment though (with the `//` gone), so without this
+    # the reader is shown a stray ": () -> Hash" at the end of the doc.
+    def strip_annotations(text)
+      return nil if text.nil?
+
+      text.to_s.lines.reject { |l| InlineType.annotation_line?(l) }.join
     end
 
     # didOpen the file once, documentSymbol once -> name => range. clangd returns
