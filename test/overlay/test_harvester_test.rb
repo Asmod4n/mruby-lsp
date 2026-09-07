@@ -73,6 +73,25 @@ RB
 check.("IO read pattern -> String? (read is not an accessor)",
   h.(io), { "File#read" => "String?" })
 
+# ── a namespaced class keeps its whole path ──────────────────────────────────
+# A gem's classes are namespaced, and the index keys entries by the qualified
+# name, so the last segment alone would resolve to nothing.
+check.("Foo::Bar.new receiver -> qualified key",
+  h.(%(res = Webmachine::SpecResponse.new\nassert_kind_of(String, res.body))),
+  { "Webmachine::SpecResponse#body" => "String" })
+check.("qualified class named in assert_kind_of",
+  h.(%(assert_kind_of(Webmachine::Config, Webmachine::Application.new.conf))),
+  { "Webmachine::Application#conf" => "Webmachine::Config" })
+check.("deep path",
+  h.(%(x = A::B::C.new\nassert_kind_of(Integer, x.n))), { "A::B::C#n" => "Integer" })
+check.("::Foo drops the leading colons",
+  h.(%(x = ::Foo.new\nassert_kind_of(Integer, x.n))), { "Foo#n" => "Integer" })
+check.("a non-constant path is not a constructor",
+  h.(%(x = foo::Bar.new\nassert_kind_of(Integer, x.n))), {})
+check.("qualified block-param receiver",
+  h.(%(Webmachine::Store.open("p") { |st| assert_kind_of(String, st.read) })),
+  { "Webmachine::Store#read" => "String" })
+
 puts
-puts "test_harvester failing=#{fail_count}/17"
+puts "test_harvester failing=#{fail_count}/23"
 exit(fail_count.zero? ? 0 : 1)

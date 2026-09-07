@@ -171,6 +171,61 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- **A C source path the server cannot open no longer kills the session.**
+  addr2line reports the path the compiler recorded, and mruby's build records a
+  relative one for its gems (`./mrbgems/mruby-regexp/src/regexp.c`) — relative
+  to the mruby root, not to wherever an editor started us. The `Errno::ENOENT`
+  left the handler, killed the thread `BaseServer` runs requests on, and the
+  server then answered nothing for the rest of the session while staying up.
+  Relative paths are expanded against the mruby root now, and a file that still
+  cannot be read costs one missing answer instead of the session. This is what
+  turned CI red on `main`.
+- **The locale gets no vote on how a source file is read.** An editor launches
+  the server with a trimmed environment (Neovim's `vim.lsp` passes `cmd_env`
+  with `PATH` and `HOME` and nothing else), so `LANG` is usually absent and
+  Ruby's `default_external` falls to US-ASCII; one byte over 127 then makes
+  every string from a file invalid and the first scan of it raises. mruby's own
+  `src/string.c` carries three such bytes. `CLI.run` sets UTF-8 for every role,
+  and every source read states UTF-8 too.
+- **A workspace types itself from its own test suite.** `harvest_test_types`
+  globbed only under the mruby root, so a gem built with `conf.gem path:` (or
+  `gemdir:`/`github:`) — whose source lives outside that tree — contributed
+  nothing, and a project could pin no type of its own even though the rule is
+  that a workspace's test corpus types that workspace. The workspace's own
+  `test/**/*.rb` is read as well now (bounded to the gem layout's test dir).
+  The harvester also keeps a constant's WHOLE path: a gem's classes are
+  namespaced and the index keys entries by the qualified name, so
+  `Foo::Bar.new` was attributed to nothing at all before. Together:
+  `assert_kind_of Webmachine::Config, Webmachine::Application.new.conf` in a
+  project's suite now types `app.conf` for every consumer.
+- **An inline annotation is no longer shown as documentation.** clangd counts a
+  `//:` line as part of the leading comment (with the `//` gone), so hover
+  ended with a stray `: () -> Hash` under the prose; the Ruby `#:` path had the
+  same wart. Both doc readers drop a line whose text after the colon parses as
+  an RBS method type — rbs decides, so prose that merely starts with a colon is
+  never mistaken for an annotation. The type is still surfaced, as the return
+  type.
+- **A C++ gem gets its C types, docs, and parameter names.** One `.cpp`
+  anywhere makes mruby build a whole gem with the C++ compiler, and a C++
+  definition is named two ways: addr2line reports the demangled, qualified
+  `ns::(anonymous namespace)::f(mrb_state*, mrb_value)`, while clangd's
+  documentSymbol carries the bare `f`. Every lookup went by that name, so it
+  missed, and Stage 3 return types, the C doc comments (`//:` annotations
+  included) and the real `mrb_get_args` parameter names were all silently off
+  for such a gem — the whole C side of it. The lookup now falls back to the
+  function whose clangd range holds the definition line addr2line reports
+  beside the name (structural; a demangled name is never taken apart), and
+  only an unambiguous hit counts. The doc probe moved from the end of the file
+  to the line right after the definition, so it sits in the function's own
+  namespace, where the name is visible. Verified live against a C++ gem
+  (`request.path` → String, `w.events` → Symbol, doc comment and
+  `set_cookie(name, value, attrs = ...)` on hover) with core C unchanged.
+- **A source file is read as UTF-8, not through the process default
+  encoding.** With `LANG` unset that default is US-ASCII, so one byte over 127
+  anywhere in a C or Ruby source made the string invalid and the first scan of
+  it (`mrb_get_args`, an annotation line) raised `ArgumentError` — inside the
+  request thread, which died and took every C answer of the session with it.
+  One comment character in one core file was enough.
 - **The refactor code actions actually apply now.** The server advertised
   `resolveProvider: true` and offered *Extract Variable*, *Extract Method*,
   and *Toggle block style*, but had no `codeAction/resolve` handler — invoking

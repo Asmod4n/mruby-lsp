@@ -685,7 +685,7 @@ module MrubyLsp
       @memo_mutex.synchronize do
         return @ctype_memo[off] if @ctype_memo.key?(off)
         info = (@enrich_memo[off] ||= @native_resolver.resolve(off))
-        @ctype_memo[off] = info && @ctype_resolver.resolve(info[:file], info[:func])
+        @ctype_memo[off] = info && @ctype_resolver.resolve(info[:file], info[:func], info[:line])
       end
     end
 
@@ -716,7 +716,7 @@ module MrubyLsp
       @memo_mutex.synchronize do
         return @cdoc_memo[off] if @cdoc_memo.key?(off)
         info = (@enrich_memo[off] ||= @native_resolver.resolve(off))
-        @cdoc_memo[off] = info && @ctype_resolver.doc(info[:file], info[:func])
+        @cdoc_memo[off] = info && @ctype_resolver.doc(info[:file], info[:func], info[:line])
       end
     end
 
@@ -734,7 +734,7 @@ module MrubyLsp
       @memo_mutex.synchronize do
         return @csig_memo[off] if @csig_memo.key?(off)
         info = (@enrich_memo[off] ||= @native_resolver.resolve(off))
-        specs = info && @ctype_resolver.arg_specs(info[:file], info[:func])
+        specs = info && @ctype_resolver.arg_specs(info[:file], info[:func], info[:line])
         @csig_memo[off] = specs && ParamFormat.render(specs)
       end
     end
@@ -771,7 +771,7 @@ module MrubyLsp
       # C method: read its mrb_yield / mrb_funcall via clangd, like c_signature.
       if @ctype_resolver && entry.respond_to?(:cfunc_offset) && entry.cfunc_offset && @native_resolver
         info = (@enrich_memo[entry.cfunc_offset] ||= @native_resolver.resolve(entry.cfunc_offset))
-        return info && @ctype_resolver.yield_args(info[:file], info[:func])
+        return info && @ctype_resolver.yield_args(info[:file], info[:func], info[:line])
       end
       # Ruby method: parse its source file, find the def, read its block-call.
       ruby_yield_params(entry)
@@ -820,12 +820,20 @@ module MrubyLsp
       mt && InlineType.return_class_name(mt)
     end
 
+    # A Ruby source as text, read as UTF-8 and scrubbed rather than through the
+    # process default encoding (US-ASCII with LANG unset), which makes every
+    # file with one accented comment character invalid and raises on the first
+    # scan of it. Same rule as CTypeResolver#source_text.
+    def read_source(path)
+      File.read(path, encoding: "BINARY").force_encoding("UTF-8").scrub
+    end
+
     def source_lines(uri)
       return @source_lines_memo[uri] if @source_lines_memo.key?(uri)
       @source_lines_memo[uri] =
         begin
           path = uri.sub(%r{\Afile://}, "")
-          File.file?(path) ? File.readlines(path) : nil
+          File.file?(path) ? read_source(path).lines : nil
         rescue StandardError
           nil
         end
@@ -844,7 +852,7 @@ module MrubyLsp
       @source_ast_memo[uri] =
         begin
           path = uri.sub(%r{\Afile://}, "")
-          File.file?(path) ? Prism.parse(File.read(path)) : nil
+          File.file?(path) ? Prism.parse(read_source(path)) : nil
         rescue StandardError
           nil
         end

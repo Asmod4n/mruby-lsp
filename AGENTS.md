@@ -38,13 +38,13 @@ matching place **in the same session, before considering the work done**:
 Rules for doc edits: state what changed and why, plainly; subtract stale lines
 rather than piling on; don't duplicate the same fact across files (link instead).
 
-**Ship the doc edit in the SAME patch as the change — always, no exceptions.**
-Work here is delivered as `git format-patch` files, so "update the doc before the
-work is done" means the doc edit is a hunk in that same patch, not a follow-up.
-A patch that changes a CLI name, a flag, an env var, a requirement, install
+**Ship the doc edit in the SAME pull request as the change — always, no
+exceptions.** "Update the doc before the work is done" means the doc edit is a
+commit in that same PR, not a follow-up.
+A change to a CLI name, a flag, an env var, a requirement, install
 steps, tool discovery, or any user-visible behavior is **incomplete** until
 `README.md` (and any other row above) is updated in it. If you catch a doc that
-already lags the code, fix it in the next patch you send rather than leaving it.
+already lags the code, fix it in the next pull request you open rather than leaving it.
 This is on you every time — there is no hook enforcing it.
 
 ## What this project is (the premise, don't violate it)
@@ -107,8 +107,10 @@ you do. This mistake has been made repeatedly, across repos; don't repeat it.
   - Apply it: `git -c user.name=<name> -c user.email=<id>+<login>@users.
     noreply.github.com commit --amend --reset-author` (or set it before
     committing).
-- **Delivery: a `git format-patch` file, not a branch/push** unless explicitly
-  asked. `git am` replays the recorded author cleanly on the maintainer's side.
+- **Delivery: a pull request.** Push a branch and open the PR against `main`.
+  The commits keep the recorded author (above), so the PR shows the maintainer
+  as the author of the work. Say in the PR body what you ran and what you could
+  not run.
 - **Generated/release-stamped files never block a merge, and the COMMITTER's
   copy always wins.** `.gitattributes` marks the `rake`-regenerated files
   (`lib/mruby_lsp/version.rb`, `vendor/value_bridge/lib/value_bridge/version.rb`,

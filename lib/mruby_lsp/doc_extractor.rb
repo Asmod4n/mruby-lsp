@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "prism"
+require_relative "inline_type"
 
 module MrubyLsp
   # Leading doc comment for a method, from its real source.
@@ -36,7 +37,9 @@ module MrubyLsp
     private
 
     def build_ruby_table(path)
-      source = File.read(path)
+      # UTF-8, not the process default (US-ASCII with LANG unset): see
+      # Index#read_source.
+      source = File.read(path, encoding: "BINARY").force_encoding("UTF-8").scrub
       result = Prism.parse(source)
 
       # Map comment line -> text, for contiguous-block lookup.
@@ -79,7 +82,10 @@ module MrubyLsp
     # stray markers, and fence a leading call-seq: block as code so markdown
     # hover doesn't run the signatures together.
     def tidy(text)
-      lines = text.lines.drop_while { |l| l.strip.empty? || l.strip == "#" }
+      # A `#:` annotation is a contract, not documentation (the `#` is already
+      # gone by here). Same rule as CTypeResolver#strip_annotations.
+      lines = text.lines.reject { |l| InlineType.annotation_line?(l) }
+      lines = lines.drop_while { |l| l.strip.empty? || l.strip == "#" }
       if lines.first&.strip == "call-seq:"
         seq = lines.drop(1).take_while { |l| !l.strip.empty? }
         rest = lines.drop(1 + seq.size)
