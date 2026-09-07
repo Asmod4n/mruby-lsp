@@ -685,7 +685,7 @@ module MrubyLsp
       @memo_mutex.synchronize do
         return @ctype_memo[off] if @ctype_memo.key?(off)
         info = (@enrich_memo[off] ||= @native_resolver.resolve(off))
-        @ctype_memo[off] = info && @ctype_resolver.resolve(info[:file], info[:func])
+        @ctype_memo[off] = info && @ctype_resolver.resolve(info[:file], info[:func], info[:line])
       end
     end
 
@@ -716,7 +716,7 @@ module MrubyLsp
       @memo_mutex.synchronize do
         return @cdoc_memo[off] if @cdoc_memo.key?(off)
         info = (@enrich_memo[off] ||= @native_resolver.resolve(off))
-        @cdoc_memo[off] = info && @ctype_resolver.doc(info[:file], info[:func])
+        @cdoc_memo[off] = info && @ctype_resolver.doc(info[:file], info[:func], info[:line])
       end
     end
 
@@ -734,7 +734,7 @@ module MrubyLsp
       @memo_mutex.synchronize do
         return @csig_memo[off] if @csig_memo.key?(off)
         info = (@enrich_memo[off] ||= @native_resolver.resolve(off))
-        specs = info && @ctype_resolver.arg_specs(info[:file], info[:func])
+        specs = info && @ctype_resolver.arg_specs(info[:file], info[:func], info[:line])
         @csig_memo[off] = specs && ParamFormat.render(specs)
       end
     end
@@ -771,7 +771,7 @@ module MrubyLsp
       # C method: read its mrb_yield / mrb_funcall via clangd, like c_signature.
       if @ctype_resolver && entry.respond_to?(:cfunc_offset) && entry.cfunc_offset && @native_resolver
         info = (@enrich_memo[entry.cfunc_offset] ||= @native_resolver.resolve(entry.cfunc_offset))
-        return info && @ctype_resolver.yield_args(info[:file], info[:func])
+        return info && @ctype_resolver.yield_args(info[:file], info[:func], info[:line])
       end
       # Ruby method: parse its source file, find the def, read its block-call.
       ruby_yield_params(entry)

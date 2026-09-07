@@ -1092,3 +1092,38 @@ replaced byte is a position the server lies about. Not valid UTF-8 is nil.
 Reproducing it needs the real shape: CI's mruby HEAD build, clangd present,
 and a trimmed environment from a cwd outside the mruby tree. Any one missing
 and it passes.
+
+## A C++ gem names its functions twice, and only clangd uses the short name
+
+One `.cpp` anywhere makes mruby compile a whole gem with the C++ compiler, so a
+"C" mrbgem is routinely C++ and its methods sit in a namespace, usually an
+anonymous one. That gives every function TWO names, and the Stage 3 pipeline
+crosses between them:
+
+- addr2line (`CLocator`, `-f -C`) reports the demangled DEFINITION:
+  `webmachine::(anonymous namespace)::watcher_events(mrb_state*, mrb_value)`.
+- clangd's documentSymbol reports the bare `watcher_events`.
+
+`CTypeResolver` keyed its symbol map on clangd's name and looked up addr2line's,
+so on a C++ gem EVERY lookup missed and three features went dark at once, with
+no error anywhere: Stage 3 return types (hand-written `//:` annotations
+included), the C doc comments, and the real `mrb_get_args` parameter names.
+Plain C is unaffected — both tools spell it the same — which is why four field
+tests on C gems never saw it.
+
+Do NOT repair it by taking the name apart. A demangled C++ name is structured
+text: the FIRST `(` here opens `(anonymous namespace)`, not the parameter list.
+addr2line reports the definition's own LINE beside the name, so `symbol_for`
+falls back to the function whose clangd range CONTAINS that line, and accepts
+only an unambiguous hit. The line already travelled with the location for the
+definition links (`NativeResolver#resolve`, `info[:line]`); it now reaches the
+four `Index` seams too.
+
+Second half: the doc probe appended its throwaway use site to the END of the
+file. At file scope a function in an anonymous namespace is not visible, so the
+completion offered nothing and every C++ method lost its comment. The probe now
+goes on the line right AFTER the definition, in whatever scope the function
+lives in. clangd's flat `SymbolInformation` carries an EMPTY `containerName`
+here, so the definition's position is the only structural handle.
+
+Test: `test/overlay/c_symbol_lookup_test.rb` (stub client, no clangd, no VM).

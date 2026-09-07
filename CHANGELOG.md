@@ -171,6 +171,17 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- **A C++ gem gets its C types, docs and parameter names.** One `.cpp` anywhere
+  makes mruby build a whole gem with the C++ compiler, and a C++ definition is
+  named two ways: addr2line reports the demangled, qualified
+  `ns::(anonymous namespace)::f(mrb_state*, mrb_value)`, clangd's documentSymbol
+  the bare `f`. Every lookup went by that name and missed, so Stage 3 return
+  types (`//:` annotations included), C doc comments and the real `mrb_get_args`
+  names were silently off for such a gem. The lookup now falls back to the
+  function whose clangd range holds the definition line addr2line reports
+  beside the name — structural, the name is never taken apart — and only an
+  unambiguous hit counts. The doc probe moved from the end of the file to the
+  line after the definition, so it sits in the function's namespace.
 - **A C source the server cannot read no longer kills the session.** addr2line
   reports the path the compiler recorded — relative, for mruby's gems — and the
   `Errno::ENOENT` from reading it left the request handler, killed the thread
