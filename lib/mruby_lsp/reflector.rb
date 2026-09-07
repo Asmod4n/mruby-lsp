@@ -118,7 +118,7 @@ module MrubyLsp
         warn format("mruby-lsp timing: %-18s %6.0fms", name, (now - t0) * 1000)
         t0 = now
       end
-      index.native_resolver = NativeResolver.new(@clocator)
+      index.native_resolver = NativeResolver.new(@clocator, @mruby_root)
       index.mruby_root = @mruby_root
       namespaces = enumerate_namespaces
       phase.call("enumerate")
@@ -513,8 +513,9 @@ module MrubyLsp
   # are NOT here -- they come from clangd, separately (Index#c_doc / c_return_type).
   # Holds only the .so path — independent of the (closed) VM.
   class NativeResolver
-    def initialize(clocator)
+    def initialize(clocator, mruby_root = nil)
       @clocator = clocator
+      @mruby_root = mruby_root
     end
 
     def resolve(offset)
@@ -523,12 +524,27 @@ module MrubyLsp
       return nil unless loc
       c_func, c_file, c_line = loc
       return nil unless c_file
+      c_file = absolute(c_file)
       {
         uri: "file://#{c_file}",
         line: c_line,
         func: c_func,    # the C function name (addr2line) -> clangd documentSymbol match
         file: c_file,    # the C source path -> clangd didOpen (Stage 3 return type)
       }
+    end
+
+    # addr2line reports the path the COMPILER recorded, and mruby's build
+    # records a relative one for its gems ("./mrbgems/mruby-regexp/src/
+    # regexp.c"). Relative to the compiler's working directory -- the mruby
+    # root -- never to ours, which is wherever the editor happened to start
+    # us. Expand it against the root; a path that still does not exist is
+    # handed back unchanged and simply fails to resolve, which is a missing
+    # location rather than a wrong one.
+    def absolute(path)
+      return path if path.nil? || File.absolute_path?(path) || @mruby_root.nil?
+
+      candidate = File.expand_path(path, @mruby_root)
+      File.file?(candidate) ? candidate : path
     end
   end
 

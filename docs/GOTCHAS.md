@@ -1148,3 +1148,52 @@ subclass defines itself are there). The pin lands on a method the VM knows —
 at all: no C function to read, no value to infer.
 
 Verified live: `app.conf.` -> 123 Config items with both fixes, 0 without.
+
+## addr2line reports the COMPILER's path, and one ENOENT killed the session
+
+CI went red on `main` with nothing but `TIMEOUT waiting for server readiness`
+from `test/consistency`, 120 seconds of a server that was up and answering
+nothing. The cause was one line of a stack trace that no run ever printed,
+because nothing captures the server's stderr there:
+
+```
+c_type_resolver.rb:in `read': No such file or directory @ rb_sysopen -
+./mrbgems/mruby-regexp/src/regexp.c (Errno::ENOENT)
+```
+
+Two independent faults, and both matter.
+
+**The path was relative.** addr2line reports the path the COMPILER recorded,
+and mruby's build records a relative one for its gems. Relative to the
+compiler's working directory — the mruby root — never to ours, which is
+wherever the editor started us. `test/consistency` sets `cmd_cwd` to the
+mruby-lsp checkout, so `./mrbgems/...` resolved to nothing. Every hand-driven
+probe that ever "worked" had been run from the mruby tree by luck.
+`NativeResolver#absolute` now expands a relative path against the mruby root
+(and hands back anything it cannot place, so a missing location stays a missing
+location and never becomes a wrong one).
+
+**The raise reached the request thread.** That is the fault with teeth. An
+exception out of a handler kills the thread `BaseServer` runs it on; the
+process stays alive, the socket stays open, and every later request gets no
+answer at all — for the rest of the session. The symptom is a silent server,
+which reads like a hang and debugs like nothing. A file we cannot open is
+NORMAL (a moved build, a stripped binary, a gem built elsewhere) and must cost
+one missing answer. `source_text` returns nil now and every caller handles it.
+
+Rule: anything a handler touches that comes from a tool's output — a path, a
+name, a line number — must degrade, not raise. Same discipline as the clangd
+client's timeout, for the same reason.
+
+The locale is the other half of the same lesson, fixed in the same pass. An
+editor launches us with a trimmed environment (Neovim's `vim.lsp` passes
+`cmd_env` with `PATH` and `HOME` and nothing else), so `LANG` is usually
+absent and Ruby's `default_external` falls to US-ASCII. One byte over 127 then
+makes every string read from a file invalid, and the first scan raises —
+mruby's own `src/string.c` carries three. `CLI.run` sets
+`Encoding.default_external` to UTF-8 for every role, and every source read
+states UTF-8 as well; the locale gets no vote.
+
+Reproducing it needs the real shape: CI's own mruby HEAD build, clangd
+present, and the server started with a trimmed env from a cwd that is NOT the
+mruby tree. Any one of those missing and it passes.

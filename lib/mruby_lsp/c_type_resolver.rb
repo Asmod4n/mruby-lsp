@@ -199,24 +199,31 @@ module MrubyLsp
       !a.nil? && ln >= a && ln <= b
     end
 
-    # A C source as text. Read as UTF-8 and scrubbed, NEVER through the process
-    # default encoding: with LANG unset that default is US-ASCII, every source
-    # byte over 127 makes the string invalid, and the first scan of it
-    # (GetArgs' mrb_get_args match) raises ArgumentError -- inside the request
-    # thread, which dies and takes every C answer of the session with it. One
-    # comment character in one core file was enough. Degrade, don't crash.
+    # A C source as text, or nil when it cannot be read.
+    #
+    # Two ways this used to take the whole session down, both ending the same
+    # way: the exception left the request thread, the thread died, and the
+    # server stayed up answering nothing for the rest of the session.
+    #
+    # 1. The path comes from addr2line, which reports what the COMPILER
+    #    recorded -- for mruby's gems a RELATIVE path. NativeResolver expands
+    #    those against the mruby root now, but a path we still cannot open is
+    #    normal (a moved build, a stripped binary, a gem built elsewhere) and
+    #    must cost one missing answer, not the session.
+    # 2. Read as UTF-8, never through the process default encoding: with LANG
+    #    unset that default is US-ASCII, one source byte over 127 makes every
+    #    string from the file invalid, and the first scan of one raises
+    #    ArgumentError. mruby's own src/string.c carries three such bytes.
     def source_text(file)
       File.read(file, encoding: "BINARY").force_encoding("UTF-8").scrub
+    rescue SystemCallError, IOError
+      nil
     end
 
     def source_lines(file)
       @src_lines ||= {}
       return @src_lines[file] if @src_lines.key?(file)
-      @src_lines[file] = begin
-        source_text(file).lines(chomp: true)
-      rescue StandardError
-        nil
-      end
+      @src_lines[file] = source_text(file)&.lines(chomp: true)
     end
 
     def compute_doc(file, func, line = nil)
@@ -224,7 +231,7 @@ module MrubyLsp
       return nil unless sym
       name = sym[:name]
       uri = "file://#{file}"
-      src = source_text(file)
+      src = source_text(file) or return nil
       # clangd fills a completion item\'s documentation with the comment ALONE
       # (no signature/params/decl blob, unlike hover) -- but only at a USE site,
       # which a definition has none of. So feed clangd one: a throwaway function
@@ -276,10 +283,14 @@ module MrubyLsp
     # SymbolInformation[] (flat, location.range); functions are SymbolKind 12.
     def ranges_for(file)
       return @ranges[file] if @ranges.key?(file)
+
+      text = source_text(file)
+      return @ranges[file] = nil unless text
+
       @ranges[file] =
         begin
           uri = "file://#{file}"
-          @client.did_open(uri, source_text(file))
+          @client.did_open(uri, text)
           syms = @client.request("textDocument/documentSymbol", textDocument: { uri: uri }) || []
           map = {}
           syms.each do |s|

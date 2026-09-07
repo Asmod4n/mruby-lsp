@@ -171,6 +171,22 @@ what mruby "usually" has.
   triggers exactly one reinstall, independent of the SemVer.
 
 ### Fixed
+- **A C source path the server cannot open no longer kills the session.**
+  addr2line reports the path the compiler recorded, and mruby's build records a
+  relative one for its gems (`./mrbgems/mruby-regexp/src/regexp.c`) — relative
+  to the mruby root, not to wherever an editor started us. The `Errno::ENOENT`
+  left the handler, killed the thread `BaseServer` runs requests on, and the
+  server then answered nothing for the rest of the session while staying up.
+  Relative paths are expanded against the mruby root now, and a file that still
+  cannot be read costs one missing answer instead of the session. This is what
+  turned CI red on `main`.
+- **The locale gets no vote on how a source file is read.** An editor launches
+  the server with a trimmed environment (Neovim's `vim.lsp` passes `cmd_env`
+  with `PATH` and `HOME` and nothing else), so `LANG` is usually absent and
+  Ruby's `default_external` falls to US-ASCII; one byte over 127 then makes
+  every string from a file invalid and the first scan of it raises. mruby's own
+  `src/string.c` carries three such bytes. `CLI.run` sets UTF-8 for every role,
+  and every source read states UTF-8 too.
 - **A workspace types itself from its own test suite.** `harvest_test_types`
   globbed only under the mruby root, so a gem built with `conf.gem path:` (or
   `gemdir:`/`github:`) — whose source lives outside that tree — contributed
